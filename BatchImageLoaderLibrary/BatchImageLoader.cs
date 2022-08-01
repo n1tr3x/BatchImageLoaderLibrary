@@ -40,6 +40,9 @@ namespace BatchImageLoaderLibrary
 
         public async Task<CachedImage> GetImageFromUrl(string url)
         {
+#if DEBUG
+            Trace.WriteLine("GetImageFromUrl " + url);
+#endif
             if (Images.ContainsKey(url))
             {
                 if (Images[url].Loaded())
@@ -57,7 +60,7 @@ namespace BatchImageLoaderLibrary
                     while (!Images[url].Loaded())
                     {
 #if DEBUG
-                        Trace.WriteLine("Image not loaded yet, wait 200 ms and check again");
+                        Trace.WriteLine("Image " + url + " not loaded yet, wait 200 ms and check again");
 #endif
                         await Task.Delay(200);
                     }
@@ -91,12 +94,22 @@ namespace BatchImageLoaderLibrary
             string url;
             if (UrlQueue.TryDequeue(out url))
             {
-                //Trace.WriteLine("Try to process url " + url);
-
+#if DEBUG
+                Trace.WriteLine("Url " + url + " dequeued");
+#endif
                 byte[] data = LoadFromCache(url);
                 if (data == null)
                 {
+#if DEBUG
+                    Trace.WriteLine("Trying to load " + url);
+#endif
                     data = await LoadImage(url);
+#if DEBUG
+                    if (data == null)
+                        Trace.WriteLine("Url " + url + " NOT loaded, data is NULL");
+                    else
+                        Trace.WriteLine("Url " + url + " loaded, data len = " + data.Length);
+#endif
                     if (data == null || data.Length == 0)
                     {
                         data = File.ReadAllBytes(@"404.png");
@@ -104,6 +117,8 @@ namespace BatchImageLoaderLibrary
                     else
                     {
                         data = CreateThumbnail(data);
+                        if (data == null)
+                            data  = File.ReadAllBytes(@"404.png");
                     }
 
                     SaveToCache(url, data);
@@ -120,58 +135,74 @@ namespace BatchImageLoaderLibrary
 
         public static byte[] CreateThumbnail(byte[] PassedImage)
         {
-            using (MemoryStream ms = new MemoryStream(PassedImage, 0, PassedImage.Length))
+            try
             {
-                using (Image img = Image.FromStream(ms))
+                using (MemoryStream ms = new MemoryStream(PassedImage, 0, PassedImage.Length))
                 {
-                    int h = 120;
-                    int w = 120;
-
-                    using (Bitmap b = new Bitmap(img, new Size(w, h)))
+                    using (Image img = Image.FromStream(ms))
                     {
-                        using (MemoryStream ms2 = new MemoryStream())
+                        int h = 120;
+                        int w = 120;
+
+                        using (Bitmap b = new Bitmap(img, new Size(w, h)))
                         {
-                            b.Save(ms2, System.Drawing.Imaging.ImageFormat.Jpeg);
-                            return ms2.ToArray();
+                            using (MemoryStream ms2 = new MemoryStream())
+                            {
+                                b.Save(ms2, System.Drawing.Imaging.ImageFormat.Jpeg);
+                                return ms2.ToArray();
+                            }
                         }
                     }
                 }
             }
-
-            return null;
+            catch (Exception e)
+            {
+                return null;
+            }
         }
 
         private async Task<byte[]> LoadImage(string url)
         {
+#if DEBUG
+            Trace.WriteLine("LoadImage " + url);
+#endif
             Interlocked.Increment(ref ImagesLoading);
-            //Trace.WriteLine("LoadImage START");
             byte[] bytes = null;
-            //Task.Delay(2000).Wait();
             var httpClient = new HttpClient();
-            //httpClient.Timeout = TimeSpan.FromSeconds(10);
             try
             {
                 bytes = await httpClient.GetByteArrayAsync(url);
             }
             catch (Exception e)
             {
-                //Trace.WriteLine("LoadImage EXEPTION");
-                //Trace.WriteLine(e);
+#if DEBUG
+                Trace.WriteLine("LoadImage Exception " + e);
+#endif
             }
 
-            //Trace.WriteLine("LoadImage END");
+#if DEBUG
+            Trace.WriteLine("LoadImage " + url + " OK");
+#endif
             Interlocked.Decrement(ref ImagesLoading);
             return bytes;
         }
 
         private static byte[] LoadFromCache(string url)
         {
+#if DEBUG
+            Trace.WriteLine("Try to LoadFromCache " + url);
+#endif
             string imageFileName = GetImagePath(url);
             if (File.Exists(imageFileName))
             {
+#if DEBUG
+                Trace.WriteLine("LoadFromCache " + url + " success");
+#endif
                 return File.ReadAllBytes(imageFileName);
             }
-
+#if DEBUG
+            Trace.WriteLine("LoadFromCache " + url + " failed");
+#endif
             return null;
         }
 
@@ -216,7 +247,7 @@ namespace BatchImageLoaderLibrary
 
         public bool Loaded()
         {
-            return data != null && data.Length > 0;
+            return data?.Length > 0;
         }
 
         public int Size()
@@ -227,6 +258,12 @@ namespace BatchImageLoaderLibrary
         public byte[] ToByteArray()
         {
             return Data;
+        }
+
+        public Image ToImage()
+        {
+            MemoryStream ms = new MemoryStream(data);
+            return Image.FromStream(ms);
         }
     }
 }
