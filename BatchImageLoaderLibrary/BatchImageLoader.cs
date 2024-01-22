@@ -11,7 +11,10 @@ namespace BatchImageLoaderLibrary
         private static ConcurrentQueue<string> UrlQueue = new();
         private static ConcurrentDictionary<string, CachedImage> Images = new();
         private static int ThreadsCount = 0;
+        public static int MaxThreadsCount = 64;
         private static int ImagesLoading = 0;
+        public static bool CreateThumbnails = true;
+        public static bool NeedSaveToCache = true;
 
         private static BatchImageLoader instance;
 
@@ -36,6 +39,36 @@ namespace BatchImageLoaderLibrary
         public int ImagesProcessing()
         {
             return UrlQueue.Count + ImagesLoading;
+        }
+
+        public static CachedImage GetThumbnail(string path, int width, int height)
+        {
+            try
+            {
+                string filename = GetImagePath(path) + "_" + width + "x" + height + ".jpg";
+                if (File.Exists(filename))
+                    return new CachedImage(File.ReadAllBytes(filename));
+
+                if (!Directory.Exists("cache"))
+                    Directory.CreateDirectory("cache");
+
+                using (Image img = Image.FromFile(path))
+                {
+                    using (Bitmap b = new Bitmap(img, new Size(width, height)))
+                    {
+                        using (MemoryStream ms = new MemoryStream())
+                        {
+                            b.Save(ms, System.Drawing.Imaging.ImageFormat.Jpeg);
+                            File.WriteAllBytes(GetImagePath(path) + "_" + width + "x" + height + ".jpg", ms.ToArray());
+                            return new CachedImage(ms.ToArray());
+                        }
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                return null;
+            }
         }
 
         public async Task<CachedImage> GetImageFromUrl(string url)
@@ -84,7 +117,7 @@ namespace BatchImageLoaderLibrary
 #if DEBUG
             Trace.WriteLine("ProcessUrlAsync begin, ThreadsCount = " + ThreadsCount + ", images left = " + UrlQueue.Count);
 #endif
-            while (ThreadsCount > 64)
+            while (ThreadsCount > MaxThreadsCount)
                 await Task.Delay(1000);
 
             Interlocked.Increment(ref ThreadsCount);
@@ -116,12 +149,15 @@ namespace BatchImageLoaderLibrary
                     }
                     else
                     {
-                        data = CreateThumbnail(data);
+                        if (CreateThumbnails)
+                            data = CreateThumbnail(data);
+
                         if (data == null)
                             data  = File.ReadAllBytes(@"404.png");
                     }
 
-                    SaveToCache(url, data);
+                    if (NeedSaveToCache)
+                        SaveToCache(url, data);
                 }
 
                 Images[url].Data = data;
@@ -133,7 +169,7 @@ namespace BatchImageLoaderLibrary
             return null;
         }
 
-        public static byte[] CreateThumbnail(byte[] PassedImage)
+        public static byte[] CreateThumbnail(byte[] PassedImage, int h = 120, int w = 120)
         {
             try
             {
@@ -141,9 +177,6 @@ namespace BatchImageLoaderLibrary
                 {
                     using (Image img = Image.FromStream(ms))
                     {
-                        int h = 120;
-                        int w = 120;
-
                         using (Bitmap b = new Bitmap(img, new Size(w, h)))
                         {
                             using (MemoryStream ms2 = new MemoryStream())
@@ -161,7 +194,7 @@ namespace BatchImageLoaderLibrary
             }
         }
 
-        private async Task<byte[]> LoadImage(string url)
+        private static async Task<byte[]> LoadImage(string url)
         {
 #if DEBUG
             Trace.WriteLine("LoadImage " + url);
@@ -222,7 +255,35 @@ namespace BatchImageLoaderLibrary
 
         private static string GetImagePath(string url)
         {
-            return "cache/" + url.Replace(":", "").Replace("/", "").Replace("?", "").Replace("*", "");
+            return "cache\\" + url.Replace(":", "")
+                                  .Replace("/", "")
+                                  .Replace(" ", "")
+                                  .Replace("\\", "")
+                                  .Replace("?", "")
+                                  .Replace("*", "");
+        }
+
+        public static bool ClearCacheForUrl(string url)
+        {
+#if DEBUG
+            Trace.WriteLine("ClearCacheForUrl " + url);
+#endif
+            if (!Directory.Exists("cache"))
+                return false;
+
+            string imageFileName = GetImagePath(url);
+            if (File.Exists(imageFileName))
+            {
+
+                Images.TryRemove(url, out _);
+                File.Delete(imageFileName);
+#if DEBUG
+                Trace.WriteLine("ClearCacheForUrl " + url + " OK");
+#endif
+                return true;
+            }
+
+            return false;
         }
     }
 
