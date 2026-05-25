@@ -8,6 +8,7 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Windows.Compatibility" Version="6.0.0" />
+    <PackageReference Include="Trinet.Core.IO.Ntfs" Version="4.1.2" />
   </ItemGroup>
 
   <ItemGroup>
