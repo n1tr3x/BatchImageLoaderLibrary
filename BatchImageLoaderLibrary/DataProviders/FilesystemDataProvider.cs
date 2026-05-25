@@ -1,0 +1,111 @@
+﻿using BatchImageLoaderLibrary.DataProviders.Interfaces;
+using System.Collections.Concurrent;
+using System.Diagnostics;
+using System.Security.Cryptography;
+using System.Text;
+using Trinet.Core.IO.Ntfs;
+
+namespace BatchImageLoaderLibrary.DataProviders
+{
+	internal class FilesystemDataProvider : IDataProvider
+	{
+		public string CacheDirectory { get; set; }
+
+
+		public FilesystemDataProvider(string cacheDirectory)
+		{
+			CacheDirectory = cacheDirectory;
+		}
+
+		public byte[] Get(string filename)
+		{
+			if (File.Exists(Path.Combine(CacheDirectory, NormalizeUrl(filename))))
+			{
+#if DEBUG
+				Trace.WriteLine("LoadFromCache " + filename + " success");
+#endif
+				return File.ReadAllBytes(Path.Combine(CacheDirectory, NormalizeUrl(filename)));
+			}
+
+			return null;
+		}
+
+		public async Task<Dictionary<string, byte[]>> GetAll()
+		{
+			if (!Directory.Exists(CacheDirectory))
+				Directory.CreateDirectory(CacheDirectory);
+
+			string[] fileNames = Directory.GetFiles(CacheDirectory);
+
+			ConcurrentDictionary<string, byte[]> result = new ConcurrentDictionary<string, byte[]>();
+
+			Task[] tasks = fileNames.Select(async fn =>
+			{
+                try
+                {
+                    StreamReader ntfsReader = (new FileInfo(fn)).GetAlternateDataStream("filename", FileMode.Open).OpenText();
+                    result.TryAdd(ntfsReader.ReadToEnd(), File.ReadAllBytes(fn));
+                    ntfsReader.Close();
+                }
+                catch (Exception e)
+                {
+                    
+                }
+			}).ToArray();
+
+			await Task.WhenAll(tasks);
+
+			return result.ToDictionary(e => e.Key, e => e.Value);
+		}
+
+		public void Add(string filename, byte[] data)
+		{
+			if (!Directory.Exists(CacheDirectory))
+				Directory.CreateDirectory(CacheDirectory);
+
+			File.WriteAllBytes(Path.Combine(CacheDirectory, NormalizeUrl(filename)), data);
+			FileStream ntfsWriter = (new FileInfo(Path.Combine(CacheDirectory, NormalizeUrl(filename)))).GetAlternateDataStream("filename", FileMode.Create).OpenWrite();
+			ntfsWriter.Write(Encoding.ASCII.GetBytes(filename));
+			ntfsWriter.Close();
+		}
+
+		public void Update(string filename, byte[] data)
+		{
+			Add(filename, data);
+		}
+
+		public void Remove(string filename)
+		{
+			if (Directory.Exists(CacheDirectory) && File.Exists(Path.Combine(CacheDirectory, filename)))
+				File.Delete(Path.Combine(CacheDirectory, filename));
+		}
+
+		public void RemoveAll()
+		{
+			if (Directory.Exists(CacheDirectory))
+				Directory.Delete(CacheDirectory, true);
+		}
+
+		private string NormalizeUrl(string url)
+		{
+            // Парсим URL
+            var uri = new Uri(url);
+
+            // Пытаемся вытащить расширение из пути
+            var ext = Path.GetExtension(uri.LocalPath);
+            if (string.IsNullOrWhiteSpace(ext))
+                ext = ".jpg"; // дефолт, если ВК не дал расширение
+
+            // Считаем SHA1 от URL, чтобы имена были короткие и уникальные
+            string hash;
+            using (var sha1 = SHA1.Create())
+            {
+                var bytes = Encoding.UTF8.GetBytes(url);
+                var hashBytes = sha1.ComputeHash(bytes);
+                hash = BitConverter.ToString(hashBytes).Replace("-", "").ToLowerInvariant();
+            }
+
+            return hash + ".jpg";
+        }
+	}
+}

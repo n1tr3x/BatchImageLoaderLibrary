@@ -1,47 +1,76 @@
-﻿using System.Collections.Concurrent;
+﻿using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
+using System.IO;
+using System.Net.Http;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace BatchImageLoaderLibrary
 {
-    public class BatchImageLoader
-    {
-        private static readonly object LockObject = new();
+	public class BatchImageLoader
+	{
+		private static readonly object LockObject = new();
+		private static BatchImageLoader instance;
+		private static ConcurrentQueue<string> UrlQueue = new();
+		private static ConcurrentDictionary<string, CachedImage> Images = new();
+		private static int threadsCount = 0;
+		private static StorageFacade storage;
+		private static int imagesLoading = 0;
 
-        private static ConcurrentQueue<string> UrlQueue = new();
-        private static ConcurrentDictionary<string, CachedImage> Images = new();
-        private static int ThreadsCount = 0;
-        public static int MaxThreadsCount = 64;
-        private static int ImagesLoading = 0;
-        public static bool CreateThumbnails = true;
-        public static bool NeedSaveToCache = true;
 
-        private static BatchImageLoader instance;
+		public int ImagesLoaded => Images.Count;
 
-        private BatchImageLoader()
-        {
-        }
+		public int ThreadCount => threadsCount;
 
-        public static BatchImageLoader Instance
-        {
-            get
-            {
-                lock (LockObject)
-                {
-                    if (instance == null)
-                        instance = new BatchImageLoader();
-                }
+		public int MaxThreadsCount { get; set; } = 64;
 
-                return instance;
-            }
-        }
+		public int ImagesLoading => imagesLoading;
 
-        public int ImagesProcessing()
-        {
-            return UrlQueue.Count + ImagesLoading;
-        }
+		public int ImagesProcessing => UrlQueue.Count + ImagesLoading;
 
-        public static CachedImage GetThumbnail(string path, int width, int height)
+		public int ImagesInQueue => UrlQueue.Count;
+
+		public bool CreateThumbnails { get; set; } = true;
+
+		public int ThumbnailWidth { get; set; } = 120;
+
+		public int ThumbnailHeigth { get; set; } = 120;
+
+		public bool NeedSaveToCache { get; set; } = true;
+
+		public static StorageType StorageType = StorageType.DB;
+
+
+
+#if DEBUG
+		private static int LoadedPhotosCount = 1;
+		private static long PhotosLoadingTime = 0;
+		private static ConcurrentDictionary<string, int> Threads = new();
+#endif
+
+
+		private BatchImageLoader()
+		{
+			storage = new StorageFacade(StorageType);
+		}
+
+		public static BatchImageLoader Instance
+		{
+			get
+			{
+				lock (LockObject)
+				{
+					instance ??= new BatchImageLoader();
+				}
+				return instance;
+			}
+		}
+
+		/*
+		public static CachedImage GetThumbnail(string path, int width, int height)
         {
             try
             {
@@ -69,262 +98,178 @@ namespace BatchImageLoaderLibrary
             {
                 return null;
             }
-        }
+        }*/
 
-        public async Task<CachedImage> GetImageFromUrl(string url)
-        {
+		public async Task<CachedImage> GetImageFromUrl(string url)
+		{
 #if DEBUG
-            Trace.WriteLine("GetImageFromUrl " + url);
+			Trace.WriteLine("GetImageFromUrl " + url);
 #endif
-            if (Images.ContainsKey(url))
-            {
-                if (Images[url].Loaded())
-                {
+			if (!Images.TryAdd(url, new CachedImage()))
+			{
+				if (Images[url].Loaded())
+				{
 #if DEBUG
-                    Trace.WriteLine("Image " + url + " already loaded, NOT enqueued, ret image");
+					Trace.WriteLine("Image " + url + " already loaded, NOT enqueued, ret image");
 #endif
-                    return Images[url];
-                }
-                return await Task.Run(async () =>
-                {
+					return Images[url];
+				}
+				return await Task.Run(async () =>
+				{
 #if DEBUG
-                    Trace.WriteLine("Image " + url + " already enqueued, waiting for loading...");
+					Trace.WriteLine("Image " + url + " already enqueued, waiting for loading...");
 #endif
-                    while (!Images[url].Loaded())
-                    {
+					//int tryCount = 0;
+					while (!Images[url].Loaded())
+					{
 #if DEBUG
-                        Trace.WriteLine("Image " + url + " not loaded yet, wait 200 ms and check again");
+						Trace.WriteLine("Image " + url + " not loaded yet, wait 500 ms and check again, images left = " + UrlQueue.Count);
+						Trace.WriteLine("Images loaded = " + LoadedPhotosCount + ", avg time = " + PhotosLoadingTime / LoadedPhotosCount + " ms");
 #endif
-                        await Task.Delay(200);
-                    }
+						await Task.Delay(500);
+					}
 #if DEBUG
-                    Trace.WriteLine("Image " + url + " loaded, ret image");
+					Trace.WriteLine("Image " + url + " loaded, ret image, images left = " + UrlQueue.Count);
 #endif
-                    return Images[url];
-                });
-            }
+					return Images[url];
+				});
+			}
 
-            UrlQueue.Enqueue(url);
-            Images[url] = new CachedImage();
+			UrlQueue.Enqueue(url);
+			Images[url] = new CachedImage();
 #if DEBUG
-            Trace.WriteLine("Image " + url + " enqueued");
+			Trace.WriteLine("Image " + url + " enqueued");
 #endif
-            return await ProcessUrlAsync();
-        }
+			return await ProcessUrlAsync();
+		}
 
         private async Task<CachedImage> ProcessUrlAsync()
-        {
+		{
 #if DEBUG
-            Trace.WriteLine("ProcessUrlAsync begin, ThreadsCount = " + ThreadsCount + ", images left = " + UrlQueue.Count);
+			Trace.WriteLine("ProcessUrlAsync begin, ThreadsCount = " + ThreadCount + ", images left = " + UrlQueue.Count);
 #endif
-            while (ThreadsCount > MaxThreadsCount)
-                await Task.Delay(1000);
+			while (threadsCount > MaxThreadsCount)
+				await Task.Delay(100);
 
-            Interlocked.Increment(ref ThreadsCount);
-
-            //Trace.WriteLine("ProcessUrlAsync started");
-
-            string url;
-            if (UrlQueue.TryDequeue(out url))
-            {
+			string url;
+			if (UrlQueue.TryDequeue(out url))
+			{
+				Interlocked.Increment(ref threadsCount);
 #if DEBUG
-                Trace.WriteLine("Url " + url + " dequeued");
+				Trace.WriteLine("Url " + url + " dequeued");
 #endif
-                byte[] data = LoadFromCache(url);
-                if (data == null)
-                {
+				byte[] data = LoadFromCache(url);
+				if (data == null)
+				{
 #if DEBUG
-                    Trace.WriteLine("Trying to load " + url);
+					Trace.WriteLine("Trying to load " + url);
 #endif
-                    data = await LoadImage(url);
+					data = await LoadImage(url);
 #if DEBUG
-                    if (data == null)
-                        Trace.WriteLine("Url " + url + " NOT loaded, data is NULL");
-                    else
-                        Trace.WriteLine("Url " + url + " loaded, data len = " + data.Length);
+					if (data == null)
+						Trace.WriteLine("Url " + url + " NOT loaded, data is NULL");
+					else
+						Trace.WriteLine("Url " + url + " loaded, data len = " + data.Length);
 #endif
-                    if (data == null || data.Length == 0)
-                    {
-                        data = File.ReadAllBytes(@"404.png");
-                    }
-                    else
-                    {
-                        if (CreateThumbnails)
-                            data = CreateThumbnail(data);
+					if (data == null || data.Length == 0)
+					{
+						data = File.ReadAllBytes(@"404.png");
+					}
+					else
+					{
+						if (CreateThumbnails)
+							data = CreateThumbnail(data);
 
-                        if (data == null)
-                            data  = File.ReadAllBytes(@"404.png");
-                    }
+						if (data == null)
+							data = File.ReadAllBytes(@"404.png");
+					}
 
-                    if (NeedSaveToCache)
-                        SaveToCache(url, data);
-                }
+					if (NeedSaveToCache)
+						SaveToCache(url, data);
+				}
 
-                Images[url].Data = data;
-                //Trace.WriteLine("Img with url " + url + " loaded, ret, image loading count = " + ImagesLoading);
-                Interlocked.Decrement(ref ThreadsCount);
-                return Images[url];
-            }
+				Images[url].Data = data;
+				//Trace.WriteLine("Img with url " + url + " loaded, ret, image loading count = " + ImagesLoading);
+				Interlocked.Decrement(ref threadsCount);
+				return Images[url];
+			}
+			return null;
+		}
 
-            return null;
-        }
+		public static byte[] CreateThumbnail(byte[] image, int h = 120, int w = 120)
+		{
+			try
+			{
+				using MemoryStream ms = new MemoryStream(image, 0, image.Length);
+				using Image img = Image.FromStream(ms);
+				using Bitmap b = new Bitmap(img, new Size(w, h));
+				using MemoryStream ms2 = new MemoryStream();
+				b.Save(ms2, System.Drawing.Imaging.ImageFormat.Jpeg);
+				return ms2.ToArray();
+			}
+			catch (Exception e)
+			{
+				return null;
+			}
+		}
 
-        public static byte[] CreateThumbnail(byte[] PassedImage, int h = 120, int w = 120)
-        {
-            try
-            {
-                using (MemoryStream ms = new MemoryStream(PassedImage, 0, PassedImage.Length))
-                {
-                    using (Image img = Image.FromStream(ms))
-                    {
-                        using (Bitmap b = new Bitmap(img, new Size(w, h)))
-                        {
-                            using (MemoryStream ms2 = new MemoryStream())
-                            {
-                                b.Save(ms2, System.Drawing.Imaging.ImageFormat.Jpeg);
-                                return ms2.ToArray();
-                            }
-                        }
-                    }
-                }
-            }
-            catch (Exception e)
-            {
-                return null;
-            }
-        }
-
-        private static async Task<byte[]> LoadImage(string url)
-        {
+		private static async Task<byte[]> LoadImage(string url)
+		{
 #if DEBUG
-            Trace.WriteLine("LoadImage " + url);
+			Trace.WriteLine("LoadImage " + url);
 #endif
-            Interlocked.Increment(ref ImagesLoading);
-            byte[] bytes = null;
-            var httpClient = new HttpClient();
-            try
-            {
-                bytes = await httpClient.GetByteArrayAsync(url);
-            }
-            catch (Exception e)
-            {
-#if DEBUG
-                Trace.WriteLine("LoadImage Exception " + e);
-#endif
-            }
+			Interlocked.Increment(ref imagesLoading);
+			byte[] bytes = null;
+			HttpClient httpClient = new HttpClient();
+			try
+			{
+				bytes = await httpClient.GetByteArrayAsync(url);
+			}
+			catch (Exception e)
+			{
+			}
 
 #if DEBUG
-            Trace.WriteLine("LoadImage " + url + " OK");
+			Trace.WriteLine("LoadImage " + url + " OK");
 #endif
-            Interlocked.Decrement(ref ImagesLoading);
-            return bytes;
-        }
+			Interlocked.Decrement(ref imagesLoading);
+			return bytes;
+		}
 
-        private static byte[] LoadFromCache(string url)
-        {
+		public async void LoadFromCache()
+		{
+			Dictionary<string, byte[]> data = await storage.GetAll();
+			foreach ((string key, byte[] value) in data)
+			{
+				Images.TryAdd(key, new CachedImage(value));
+			}
+		}
+
+		private static byte[] LoadFromCache(string url)
+		{
 #if DEBUG
-            Trace.WriteLine("Try to LoadFromCache " + url);
+			Trace.WriteLine("Try to LoadFromCache " + url);
 #endif
-            string imageFileName = GetImagePath(url);
-            if (File.Exists(imageFileName))
-            {
+			byte[] result = storage.Get(url);
 #if DEBUG
-                Trace.WriteLine("LoadFromCache " + url + " success");
+			Trace.WriteLine("LoadFromCache " + url + (result != null ? " success" : " failed"));
 #endif
-                return File.ReadAllBytes(imageFileName);
-            }
-#if DEBUG
-            Trace.WriteLine("LoadFromCache " + url + " failed");
-#endif
-            return null;
-        }
+			return result;
+		}
 
-        private static bool SaveToCache(string url, byte[] data)
-        {
-            if (!Directory.Exists("cache"))
-                Directory.CreateDirectory("cache");
-            string imageFileName = GetImagePath(url);
-            if (!File.Exists(imageFileName))
-            {
-                File.WriteAllBytesAsync(imageFileName, data);
-                return true;
-            }
+		private static void SaveToCache(string url, byte[] data)
+		{
+			storage.Add(url, data);
+		}
 
-            return false;
-        }
+		public static void ClearCacheForUrl(string url)
+		{
+			storage.Remove(url);
+		}
 
-        private static string GetImagePath(string url)
-        {
-            return "cache\\" + url.Replace(":", "")
-                                  .Replace("/", "")
-                                  .Replace(" ", "")
-                                  .Replace("\\", "")
-                                  .Replace("?", "")
-                                  .Replace("*", "");
-        }
-
-        public static bool ClearCacheForUrl(string url)
-        {
-#if DEBUG
-            Trace.WriteLine("ClearCacheForUrl " + url);
-#endif
-            if (!Directory.Exists("cache"))
-                return false;
-
-            string imageFileName = GetImagePath(url);
-            if (File.Exists(imageFileName))
-            {
-
-                Images.TryRemove(url, out _);
-                File.Delete(imageFileName);
-#if DEBUG
-                Trace.WriteLine("ClearCacheForUrl " + url + " OK");
-#endif
-                return true;
-            }
-
-            return false;
-        }
-    }
-
-    public class CachedImage
-    {
-        private volatile byte[] data;
-
-        public CachedImage()
-        {
-        }
-
-        public CachedImage(byte[] data)
-        {
-            Data = data;
-        }
-
-        public byte[] Data
-        {
-            get => data;
-            set => data = value;
-        }
-
-        public bool Loaded()
-        {
-            return data?.Length > 0;
-        }
-
-        public int Size()
-        {
-            return data.Length;
-        }
-
-        public byte[] ToByteArray()
-        {
-            return Data;
-        }
-
-        public Image ToImage()
-        {
-            MemoryStream ms = new MemoryStream(data);
-            return Image.FromStream(ms);
-        }
-    }
+		public static void ClearCache()
+		{
+			storage.RemoveAll();
+		}
+	}
 }
