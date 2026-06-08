@@ -1,130 +1,132 @@
-﻿using BatchImageLoaderLibrary.DataProviders.Interfaces;
+using BatchImageLoaderLibrary.DataProviders.Interfaces;
 using Microsoft.Data.Sqlite;
-using System.Data;
 
 namespace BatchImageLoaderLibrary.DataProviders
 {
 	internal class SQLiteDataProvider : IDataProvider
 	{
-		private SqliteConnection DBConnection;
+		// Храним строку подключения, а не одно соединение: на каждую операцию
+		// берём отдельное соединение из пула. SqliteConnection/SqliteCommand НЕ
+		// потокобезопасны, а провайдер вызывают из десятков потоков сразу.
+		private readonly string connectionString;
 
 		// Вариант картинки (размер превью / "orig"), часть составного ключа.
 		public string Variant { get; set; } = "orig";
 
 		public SQLiteDataProvider(string dbName)
 		{
-			DBConnection = new SqliteConnection(@"Data Source=" + dbName);
-			DBConnection.Open();
-			EnsureSchema();
+			connectionString = "Data Source=" + dbName;
+			using SqliteConnection connection = OpenConnection();
+			EnsureSchema(connection);
 		}
 
-		private void EnsureSchema()
+		// Пул включён по умолчанию (Microsoft.Data.Sqlite 6+), поэтому
+		// Open/Dispose дёшевы — реально переиспользуется хэндл из пула.
+		// busy_timeout заставляет ждать снятия блокировки вместо мгновенного
+		// "database is locked" при конкурентной записи.
+		private SqliteConnection OpenConnection()
 		{
+			SqliteConnection connection = new SqliteConnection(connectionString);
+			connection.Open();
+			Execute(connection, "PRAGMA busy_timeout = 30000");
+			return connection;
+		}
+
+		private void EnsureSchema(SqliteConnection connection)
+		{
+			// WAL: конкурентные читатели не блокируют писателя и наоборот —
+			// важно для пакетной загрузки. Режим персистентный, ставится один раз.
+			Execute(connection, "PRAGMA journal_mode = WAL");
+
 			// Версионируем схему. Всё, что старее v1 (включая таблицу старого
 			// формата без колонки variant), просто сбрасываем — это кэш,
 			// мигрировать данные не нужно.
 			long version;
-			using (SqliteCommand get = new SqliteCommand("PRAGMA user_version", DBConnection))
-				version = (long)get.ExecuteScalar();
+			using (SqliteCommand get = connection.CreateCommand())
+			{
+				get.CommandText = "PRAGMA user_version";
+				version = Convert.ToInt64(get.ExecuteScalar());
+			}
 
 			if (version < 1)
 			{
-				new SqliteCommand("DROP TABLE IF EXISTS images", DBConnection).ExecuteNonQuery();
-				new SqliteCommand("CREATE TABLE images (path TEXT, variant TEXT, data BLOB NOT NULL, PRIMARY KEY(path, variant))", DBConnection).ExecuteNonQuery();
-				new SqliteCommand("PRAGMA user_version = 1", DBConnection).ExecuteNonQuery();
+				Execute(connection, "DROP TABLE IF EXISTS images");
+				Execute(connection, "CREATE TABLE images (path TEXT, variant TEXT, data BLOB NOT NULL, PRIMARY KEY(path, variant))");
+				Execute(connection, "PRAGMA user_version = 1");
 			}
+		}
+
+		private static void Execute(SqliteConnection connection, string sql)
+		{
+			using SqliteCommand command = connection.CreateCommand();
+			command.CommandText = sql;
+			command.ExecuteNonQuery();
 		}
 
 		public byte[] Get(string path)
 		{
-			if (DBConnection.State != ConnectionState.Open)
-				DBConnection.Open();
-			string sql = "SELECT data FROM Images WHERE path = @path AND variant = @variant";
-			SqliteCommand command = new SqliteCommand(sql, DBConnection);
+			using SqliteConnection connection = OpenConnection();
+			using SqliteCommand command = connection.CreateCommand();
+			command.CommandText = "SELECT data FROM images WHERE path = @path AND variant = @variant";
 			command.Parameters.AddWithValue("@path", path);
 			command.Parameters.AddWithValue("@variant", Variant);
 
-			SqliteDataReader reader = command.ExecuteReader();
-
-			if (!reader.Read())
-				return null;
-
-			return (byte[])reader["data"];
+			using SqliteDataReader reader = command.ExecuteReader();
+			return reader.Read() ? (byte[])reader["data"] : null;
 		}
 
 		public async Task<Dictionary<string, byte[]>> GetAll()
 		{
 			Dictionary<string, byte[]> result = new Dictionary<string, byte[]>();
-			if (DBConnection.State != ConnectionState.Open)
-				DBConnection.Open();
-			string sql = "SELECT path, data FROM Images WHERE variant = @variant";
-			SqliteCommand command = new SqliteCommand(sql, DBConnection);
+			using SqliteConnection connection = OpenConnection();
+			using SqliteCommand command = connection.CreateCommand();
+			command.CommandText = "SELECT path, data FROM images WHERE variant = @variant";
 			command.Parameters.AddWithValue("@variant", Variant);
-			SqliteDataReader reader = await command.ExecuteReaderAsync();
 
+			using SqliteDataReader reader = await command.ExecuteReaderAsync();
 			while (await reader.ReadAsync())
-			{
 				result[(string)reader["path"]] = (byte[])reader["data"];
-			}
 
 			return result;
 		}
 
 		public void Add(string path, byte[] data)
 		{
-			if (DBConnection.State != ConnectionState.Open)
-				DBConnection.Open();
-
-			string sql = "INSERT OR REPLACE INTO Images (path, variant, data) VALUES(@path, @variant, @data)";
-			SqliteCommand command = new SqliteCommand(sql, DBConnection);
+			using SqliteConnection connection = OpenConnection();
+			using SqliteCommand command = connection.CreateCommand();
+			command.CommandText = "INSERT OR REPLACE INTO images (path, variant, data) VALUES(@path, @variant, @data)";
 			command.Parameters.AddWithValue("@path", path);
 			command.Parameters.AddWithValue("@variant", Variant);
-			command.Parameters.Add(@"data", SqliteType.Blob, data.Length).Value = data;
+			command.Parameters.Add("@data", SqliteType.Blob, data.Length).Value = data;
 			command.ExecuteNonQuery();
 		}
 
 		public void Update(string path, byte[] data)
 		{
-			if (DBConnection.State != ConnectionState.Open)
-				DBConnection.Open();
-
-			string sql = "UPDATE Images SET data = @data WHERE path = @path AND variant = @variant";
-			SqliteCommand command = new SqliteCommand(sql, DBConnection);
+			using SqliteConnection connection = OpenConnection();
+			using SqliteCommand command = connection.CreateCommand();
+			command.CommandText = "UPDATE images SET data = @data WHERE path = @path AND variant = @variant";
 			command.Parameters.AddWithValue("@path", path);
 			command.Parameters.AddWithValue("@variant", Variant);
-			command.Parameters.Add(@"data", SqliteType.Blob, data.Length).Value = data;
+			command.Parameters.Add("@data", SqliteType.Blob, data.Length).Value = data;
 			command.ExecuteNonQuery();
 		}
 
 		public void Remove(string path)
 		{
-			if (DBConnection.State != ConnectionState.Open)
-				DBConnection.Open();
-
 			// Удаляем ВСЕ варианты (размеры) этого URL, а не только текущий.
-			string sql = "DELETE FROM Images WHERE path = @path";
-			SqliteCommand command = new SqliteCommand(sql, DBConnection);
+			using SqliteConnection connection = OpenConnection();
+			using SqliteCommand command = connection.CreateCommand();
+			command.CommandText = "DELETE FROM images WHERE path = @path";
 			command.Parameters.AddWithValue("@path", path);
 			command.ExecuteNonQuery();
-			Flush();
 		}
 
 		public void RemoveAll()
 		{
-			if (DBConnection.State != ConnectionState.Open)
-				DBConnection.Open();
-
-			string sql = "DELETE FROM Images";
-			SqliteCommand command = new SqliteCommand(sql, DBConnection);
-			command.ExecuteNonQuery();
-			Flush();
-		}
-
-		public void Flush()
-		{
-			string sql = "VACUUM";
-			SqliteCommand command = new SqliteCommand(sql, DBConnection);
-			command.ExecuteNonQuery();
+			using SqliteConnection connection = OpenConnection();
+			Execute(connection, "DELETE FROM images");
+			Execute(connection, "VACUUM");
 		}
 	}
 }
