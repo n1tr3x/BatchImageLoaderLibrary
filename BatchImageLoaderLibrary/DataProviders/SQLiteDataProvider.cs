@@ -63,7 +63,7 @@ namespace BatchImageLoaderLibrary.DataProviders
 			command.ExecuteNonQuery();
 		}
 
-		public byte[] Get(string path)
+		public byte[]? Get(string path)
 		{
 			using SqliteConnection connection = OpenConnection();
 			using SqliteCommand command = connection.CreateCommand();

@@ -16,7 +16,7 @@ namespace BatchImageLoaderLibrary
 		private string directoryName = @"cache";
         //private string directoryName = @"d:\dropbox\работа\PhotoSearchCommander\cache";
 
-        private IDataProvider dataProvider;
+        private IDataProvider dataProvider = null!;
 
 		public StorageFacade(StorageType type)
 		{
@@ -83,7 +83,7 @@ namespace BatchImageLoaderLibrary
 			set => dataProvider.Variant = value;
 		}
 
-		public byte[] Get(string url)
+		public byte[]? Get(string url)
 		{
 			//if (storageType == StorageType.FILE)
 			//	url = NormalizeUrl(url);

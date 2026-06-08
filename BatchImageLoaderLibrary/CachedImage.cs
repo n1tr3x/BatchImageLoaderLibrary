@@ -1,10 +1,11 @@
-﻿using System.Drawing;
+using System.Diagnostics;
+using System.Drawing;
 
 namespace BatchImageLoaderLibrary
 {
 	public class CachedImage
 	{
-		private volatile byte[] data;
+		private volatile byte[]? data;
 
 		public CachedImage()
 		{
@@ -15,7 +16,7 @@ namespace BatchImageLoaderLibrary
 			Data = data;
 		}
 
-		public byte[] Data
+		public byte[]? Data
 		{
 			get => data;
 			set => data = value;
@@ -28,25 +29,33 @@ namespace BatchImageLoaderLibrary
 
 		public int Size()
 		{
-			return data.Length;
+			return data?.Length ?? 0;
 		}
 
-		public byte[] ToByteArray()
+		public byte[]? ToByteArray()
 		{
 			return Data;
 		}
 
-		public Image ToImage()
+		public Image? ToImage()
 		{
+			if (data == null)
+				return null;
+
+			// MemoryStream должен жить, пока живёт Image (GDI+ читает из него
+			// лениво), поэтому в успешной ветке его НЕ закрываем; закрываем
+			// только при ошибке, где Image создан не будет.
 			MemoryStream ms = new MemoryStream(data);
-            try
-            {
-                return Image.FromStream(ms);
-            }
-            catch (Exception ex)
-            {
-                return null;
-            }
-        }
+			try
+			{
+				return Image.FromStream(ms);
+			}
+			catch (Exception ex)
+			{
+				Trace.WriteLine("ToImage failed: " + ex.Message);
+				ms.Dispose();
+				return null;
+			}
+		}
 	}
 }

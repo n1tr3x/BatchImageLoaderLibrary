@@ -6,7 +6,7 @@
 		// Входит в ключ кэша: имя файла у FILE, часть составного PK у DB.
 		public string Variant { get; set; }
 
-		public byte[] Get(string key);
+		public byte[]? Get(string key);
 
 		public Task<Dictionary<string, byte[]>> GetAll();
 

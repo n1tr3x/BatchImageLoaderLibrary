@@ -7,16 +7,16 @@ List<string> imgs = new List<string>()
 };
 
 BatchImageLoader.StorageType = StorageType.FILE;
-BatchImageLoader.Instance.LoadFromCache();
+await BatchImageLoader.Instance.LoadFromCache();
 
+List<Task<CachedImage>> tasks = new();
 foreach (string img in imgs)
 {
-	BatchImageLoader.Instance.GetImageFromUrl(img);
+	tasks.Add(BatchImageLoader.Instance.GetImageFromUrl(img));
 }
-BatchImageLoader.Instance.LoadFromCache();
-//BatchImageLoader.Instance.GetImageFromUrl(@"https://sun9-37.userapi.com/impg/ycC_AEalvXdJnuMfaqN_Owv6ySyNaqan9SXF7g/QNppWrs6xfs.jpg?size=1215x2160&quality=95&sign=453e659c0c48ec55577a23aaeeab2d35&type=album");
+await Task.WhenAll(tasks);
 
+await BatchImageLoader.Instance.LoadFromCache();
 
-await Task.Delay(11233);
-
+Console.WriteLine("Loaded " + BatchImageLoader.Instance.ImagesLoaded + " images");
 Console.ReadKey();

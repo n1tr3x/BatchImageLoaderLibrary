@@ -14,17 +14,17 @@ namespace BatchImageLoaderLibrary
 	public class BatchImageLoader
 	{
 		private static readonly object LockObject = new();
-		private static BatchImageLoader instance;
+		private static BatchImageLoader? instance;
 		private static int imagesInQueue = 0;
 		private static ConcurrentDictionary<string, Lazy<Task<CachedImage>>> Images = new();
 		private static int threadsCount = 0;
-		private static StorageFacade storage;
+		private static StorageFacade storage = null!;
 		private static int imagesLoading = 0;
 
 		// Жёсткий лимит параллелизма загрузок. Создаётся лениво из текущего
 		// MaxThreadsCount при первой загрузке, поэтому значение нужно задать
 		// ДО первого GetImageFromUrl (так его и используют все потребители).
-		private static SemaphoreSlim throttle;
+		private static SemaphoreSlim? throttle;
 		private static readonly object throttleLock = new();
 
 		// Один разделяемый HttpClient на всю библиотеку: переиспользует пул
@@ -49,14 +49,17 @@ namespace BatchImageLoaderLibrary
 			try
 			{
 				Assembly assembly = Assembly.GetExecutingAssembly();
-				string resourceName = Array.Find(
+				string? resourceName = Array.Find(
 					assembly.GetManifestResourceNames(),
 					n => n.EndsWith("404.png", StringComparison.OrdinalIgnoreCase));
 
 				if (resourceName == null)
 					return Array.Empty<byte>();
 
-				using Stream stream = assembly.GetManifestResourceStream(resourceName);
+				using Stream? stream = assembly.GetManifestResourceStream(resourceName);
+				if (stream == null)
+					return Array.Empty<byte>();
+
 				using MemoryStream ms = new MemoryStream();
 				stream.CopyTo(ms);
 				return ms.ToArray();
@@ -103,13 +106,6 @@ namespace BatchImageLoaderLibrary
 			}
 		}
 
-
-
-#if DEBUG
-		private static int LoadedPhotosCount = 1;
-		private static long PhotosLoadingTime = 0;
-		private static ConcurrentDictionary<string, int> Threads = new();
-#endif
 
 
 		private BatchImageLoader()
@@ -205,7 +201,7 @@ namespace BatchImageLoaderLibrary
 				// Размер превью (или orig) входит в ключ кэша, поэтому и чтение,
 				// и запись должны идти под одним вариантом.
 				storage.Variant = CurrentVariant();
-				byte[] data = LoadFromCache(url);
+				byte[]? data = LoadFromCache(url);
 				if (data == null)
 				{
 #if DEBUG
@@ -251,7 +247,7 @@ namespace BatchImageLoaderLibrary
 			}
 		}
 
-		public static byte[] CreateThumbnail(byte[] image, int h = 120, int w = 120)
+		public static byte[]? CreateThumbnail(byte[] image, int h = 120, int w = 120)
 		{
 			try
 			{
@@ -264,28 +260,27 @@ namespace BatchImageLoaderLibrary
 			}
 			catch (Exception e)
 			{
+				Trace.WriteLine("CreateThumbnail failed: " + e.Message);
 				return null;
 			}
 		}
 
-		private static async Task<byte[]> LoadImage(string url)
+		private static async Task<byte[]?> LoadImage(string url)
 		{
 #if DEBUG
 			Trace.WriteLine("LoadImage " + url);
 #endif
 			Interlocked.Increment(ref imagesLoading);
-			byte[] bytes = null;
+			byte[]? bytes = null;
 			try
 			{
 				bytes = await httpClient.GetByteArrayAsync(url);
 			}
 			catch (Exception e)
 			{
+				Trace.WriteLine("LoadImage failed for " + url + ": " + e.Message);
 			}
 
-#if DEBUG
-			Trace.WriteLine("LoadImage " + url + " OK");
-#endif
 			Interlocked.Decrement(ref imagesLoading);
 			return bytes;
 		}
@@ -302,12 +297,12 @@ namespace BatchImageLoaderLibrary
 			}
 		}
 
-		private static byte[] LoadFromCache(string url)
+		private static byte[]? LoadFromCache(string url)
 		{
 #if DEBUG
 			Trace.WriteLine("Try to LoadFromCache " + url);
 #endif
-			byte[] result = storage.Get(url);
+			byte[]? result = storage.Get(url);
 #if DEBUG
 			Trace.WriteLine("LoadFromCache " + url + (result != null ? " success" : " failed"));
 #endif
@@ -331,7 +326,10 @@ namespace BatchImageLoaderLibrary
 			if (throttle != null)
 				return throttle;
 			lock (throttleLock)
-				return throttle ??= new SemaphoreSlim(MaxThreadsCount, MaxThreadsCount);
+			{
+				int max = Math.Max(1, MaxThreadsCount);
+				return throttle ??= new SemaphoreSlim(max, max);
+			}
 		}
 
 		public static void ClearCacheForUrl(string url)

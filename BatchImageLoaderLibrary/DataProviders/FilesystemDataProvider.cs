@@ -22,7 +22,7 @@ namespace BatchImageLoaderLibrary.DataProviders
 			CacheDirectory = cacheDirectory;
 		}
 
-		public byte[] Get(string filename)
+		public byte[]? Get(string filename)
 		{
 			if (File.Exists(Path.Combine(CacheDirectory, NormalizeUrl(filename))))
 			{
@@ -54,7 +54,7 @@ namespace BatchImageLoaderLibrary.DataProviders
                 }
                 catch (Exception e)
                 {
-                    
+                    Trace.WriteLine("FilesystemDataProvider.GetAll: failed to read " + fn + ": " + e.Message);
                 }
 			}).ToArray();
 
