@@ -4,7 +4,9 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
+using System.Net;
 using System.Net.Http;
+using System.Net.Sockets;
 using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
@@ -27,6 +29,26 @@ namespace BatchImageLoaderLibrary
 		private static SemaphoreSlim? throttle;
 		private static readonly object throttleLock = new();
 
+		// Привязка исходящего сокета к локальному порту вне зарезервированных WinNAT диапазонов
+		// (Hyper-V/WSL/Docker), иначе connect падает с SocketException 10013.
+		private static async ValueTask<Stream> ConnectViaSafeLocalPort(SocketsHttpConnectionContext context, CancellationToken cancellationToken)
+		{
+			Socket socket = new(SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
+			try
+			{
+				bool bound = false;
+				for (int i = 0; i < 64 && !bound; i++)
+				{
+					try { socket.Bind(new IPEndPoint(IPAddress.Any, 20000 + Random.Shared.Next(0, 29000))); bound = true; }
+					catch (SocketException) { }
+				}
+				if (!bound) socket.Bind(new IPEndPoint(IPAddress.Any, 0));
+				await socket.ConnectAsync(context.DnsEndPoint, cancellationToken);
+				return new NetworkStream(socket, ownsSocket: true);
+			}
+			catch { socket.Dispose(); throw; }
+		}
+
 		// Один разделяемый HttpClient на всю библиотеку: переиспользует пул
 		// соединений и не плодит сокеты в TIME_WAIT при пакетной загрузке.
 		// PooledConnectionLifetime заставляет периодически пересоздавать
@@ -34,7 +56,8 @@ namespace BatchImageLoaderLibrary
 		private static readonly HttpClient httpClient = new HttpClient(
 			new SocketsHttpHandler
 			{
-				PooledConnectionLifetime = TimeSpan.FromMinutes(5)
+				PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+				ConnectCallback = ConnectViaSafeLocalPort
 			})
 		{
 			Timeout = TimeSpan.FromSeconds(30)
