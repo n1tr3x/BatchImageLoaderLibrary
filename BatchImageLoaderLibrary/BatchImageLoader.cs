@@ -199,6 +199,9 @@ namespace BatchImageLoaderLibrary
 #if DEBUG
 				Trace.WriteLine("Url " + url + " dequeued");
 #endif
+				// Размер превью (или orig) попадёт в имя файла кэша, поэтому
+				// и чтение, и запись должны идти под одним вариантом.
+				storage.FileVariant = CurrentVariant();
 				byte[] data = LoadFromCache(url);
 				if (data == null)
 				{
@@ -221,7 +224,7 @@ namespace BatchImageLoaderLibrary
 					else
 					{
 						if (CreateThumbnails)
-							data = CreateThumbnail(data);
+							data = CreateThumbnail(data, ThumbnailHeigth, ThumbnailWidth);
 
 						if (data == null)
 						{
@@ -307,6 +310,13 @@ namespace BatchImageLoaderLibrary
 		private static void SaveToCache(string url, byte[] data)
 		{
 			storage.Add(url, data);
+		}
+
+		// Суффикс имени файла кэша: размер превью ("120x120") или "orig"
+		// для полноразмерной картинки, когда генерация превью выключена.
+		private string CurrentVariant()
+		{
+			return CreateThumbnails ? ThumbnailWidth + "x" + ThumbnailHeigth : "orig";
 		}
 
 		public static void ClearCacheForUrl(string url)

@@ -11,6 +11,11 @@ namespace BatchImageLoaderLibrary.DataProviders
 	{
 		public string CacheDirectory { get; set; }
 
+		// Вариант кэшируемой картинки, попадает в конец имени файла:
+		// "120x120" для превью или "orig" для полноразмера. Задаётся
+		// загрузчиком из CreateThumbnails + ThumbnailWidth/Height.
+		public string Variant { get; set; } = "orig";
+
 
 		public FilesystemDataProvider(string cacheDirectory)
 		{
@@ -76,8 +81,9 @@ namespace BatchImageLoaderLibrary.DataProviders
 
 		public void Remove(string filename)
 		{
-			if (Directory.Exists(CacheDirectory) && File.Exists(Path.Combine(CacheDirectory, filename)))
-				File.Delete(Path.Combine(CacheDirectory, filename));
+			string path = Path.Combine(CacheDirectory, NormalizeUrl(filename));
+			if (Directory.Exists(CacheDirectory) && File.Exists(path))
+				File.Delete(path);
 		}
 
 		public void RemoveAll()
@@ -88,15 +94,8 @@ namespace BatchImageLoaderLibrary.DataProviders
 
 		private string NormalizeUrl(string url)
 		{
-            // Парсим URL
-            var uri = new Uri(url);
-
-            // Пытаемся вытащить расширение из пути
-            var ext = Path.GetExtension(uri.LocalPath);
-            if (string.IsNullOrWhiteSpace(ext))
-                ext = ".jpg"; // дефолт, если ВК не дал расширение
-
-            // Считаем SHA1 от URL, чтобы имена были короткие и уникальные
+            // Считаем SHA1 от URL, чтобы имена были короткие и уникальные,
+            // и дописываем вариант (размер превью / orig) в конец имени.
             string hash;
             using (var sha1 = SHA1.Create())
             {
@@ -105,7 +104,7 @@ namespace BatchImageLoaderLibrary.DataProviders
                 hash = BitConverter.ToString(hashBytes).Replace("-", "").ToLowerInvariant();
             }
 
-            return hash + ".jpg";
+            return hash + "_" + Variant + ".jpg";
         }
 	}
 }

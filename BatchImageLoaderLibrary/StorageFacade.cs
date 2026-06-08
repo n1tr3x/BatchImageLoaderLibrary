@@ -75,6 +75,18 @@ namespace BatchImageLoaderLibrary
 			}
 		}
 
+		// Вариант имени файла для FILE-провайдера (размер превью / "orig").
+		// Для DB-провайдера — no-op: там ключом служит сам URL.
+		public string FileVariant
+		{
+			get => dataProvider is FilesystemDataProvider fp ? fp.Variant : null;
+			set
+			{
+				if (dataProvider is FilesystemDataProvider fp)
+					fp.Variant = value;
+			}
+		}
+
 		public byte[] Get(string url)
 		{
 			//if (storageType == StorageType.FILE)
