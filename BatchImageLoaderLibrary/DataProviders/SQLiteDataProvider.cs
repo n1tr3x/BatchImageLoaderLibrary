@@ -28,8 +28,9 @@ namespace BatchImageLoaderLibrary.DataProviders
 		{
 			if (DBConnection.State != ConnectionState.Open)
 				DBConnection.Open();
-			string sql = "SELECT data FROM Images WHERE path LIKE '" + path + "'";
+			string sql = "SELECT data FROM Images WHERE path = @path";
 			SqliteCommand command = new SqliteCommand(sql, DBConnection);
+			command.Parameters.AddWithValue("@path", path);
 
 			SqliteDataReader reader = command.ExecuteReader();
 
@@ -61,8 +62,9 @@ namespace BatchImageLoaderLibrary.DataProviders
 			if (DBConnection.State != ConnectionState.Open)
 				DBConnection.Open();
 
-			string sql = "INSERT INTO Images (path, data) VALUES('" + path + "', @data)";
+			string sql = "INSERT INTO Images (path, data) VALUES(@path, @data)";
 			SqliteCommand command = new SqliteCommand(sql, DBConnection);
+			command.Parameters.AddWithValue("@path", path);
 			command.Parameters.Add(@"data", SqliteType.Blob, data.Length).Value = data;
 			command.ExecuteNonQuery();
 		}
@@ -72,8 +74,9 @@ namespace BatchImageLoaderLibrary.DataProviders
 			if (DBConnection.State != ConnectionState.Open)
 				DBConnection.Open();
 
-			string sql = "UPDATE Images (data) VALUES(@data) WHERE path LIKE '" + path + "'";
+			string sql = "UPDATE Images SET data = @data WHERE path = @path";
 			SqliteCommand command = new SqliteCommand(sql, DBConnection);
+			command.Parameters.AddWithValue("@path", path);
 			command.Parameters.Add(@"data", SqliteType.Blob, data.Length).Value = data;
 			command.ExecuteNonQuery();
 		}
@@ -83,8 +86,9 @@ namespace BatchImageLoaderLibrary.DataProviders
 			if (DBConnection.State != ConnectionState.Open)
 				DBConnection.Open();
 
-			string sql = "DELETE FROM Images WHERE path LIKE '" + path + "'";
+			string sql = "DELETE FROM Images WHERE path = @path";
 			SqliteCommand command = new SqliteCommand(sql, DBConnection);
+			command.Parameters.AddWithValue("@path", path);
 			command.ExecuteNonQuery();
 			Flush();
 		}
