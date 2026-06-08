@@ -21,6 +21,12 @@ namespace BatchImageLoaderLibrary
 		private static StorageFacade storage;
 		private static int imagesLoading = 0;
 
+		// Жёсткий лимит параллелизма загрузок. Создаётся лениво из текущего
+		// MaxThreadsCount при первой загрузке, поэтому значение нужно задать
+		// ДО первого GetImageFromUrl (так его и используют все потребители).
+		private static SemaphoreSlim throttle;
+		private static readonly object throttleLock = new();
+
 		// Один разделяемый HttpClient на всю библиотеку: переиспользует пул
 		// соединений и не плодит сокеты в TIME_WAIT при пакетной загрузке.
 		// PooledConnectionLifetime заставляет периодически пересоздавать
@@ -190,57 +196,65 @@ namespace BatchImageLoaderLibrary
 #if DEBUG
 			Trace.WriteLine("ProcessUrlAsync begin, ThreadsCount = " + ThreadCount + ", images waiting = " + imagesInQueue);
 #endif
-			while (threadsCount > MaxThreadsCount)
-				await Task.Delay(100);
-
+			// Жёсткий лимит параллелизма: семафор не протекает (в отличие от
+			// прежней проверки threadsCount ДО инкремента) и не крутит busy-wait.
+			SemaphoreSlim throttle = GetThrottle();
+			await throttle.WaitAsync();
 			Interlocked.Increment(ref threadsCount);
 			Interlocked.Decrement(ref imagesInQueue);
-#if DEBUG
-			Trace.WriteLine("Url " + url + " processing");
-#endif
-			// Размер превью (или orig) входит в ключ кэша, поэтому и чтение,
-			// и запись должны идти под одним вариантом.
-			storage.Variant = CurrentVariant();
-			byte[] data = LoadFromCache(url);
-			if (data == null)
+			try
 			{
 #if DEBUG
-				Trace.WriteLine("Trying to load " + url);
+				Trace.WriteLine("Url " + url + " processing");
 #endif
-				data = await LoadImage(url);
-#if DEBUG
+				// Размер превью (или orig) входит в ключ кэша, поэтому и чтение,
+				// и запись должны идти под одним вариантом.
+				storage.Variant = CurrentVariant();
+				byte[] data = LoadFromCache(url);
 				if (data == null)
-					Trace.WriteLine("Url " + url + " NOT loaded, data is NULL");
-				else
-					Trace.WriteLine("Url " + url + " loaded, data len = " + data.Length);
+				{
+#if DEBUG
+					Trace.WriteLine("Trying to load " + url);
 #endif
-				bool loadFailed = false;
-				if (data == null || data.Length == 0)
-				{
-					loadFailed = true;
-					data = NotFoundImage;
-				}
-				else
-				{
-					if (CreateThumbnails)
-						data = CreateThumbnail(data, ThumbnailHeigth, ThumbnailWidth);
-
+					data = await LoadImage(url);
+#if DEBUG
 					if (data == null)
+						Trace.WriteLine("Url " + url + " NOT loaded, data is NULL");
+					else
+						Trace.WriteLine("Url " + url + " loaded, data len = " + data.Length);
+#endif
+					bool loadFailed = false;
+					if (data == null || data.Length == 0)
 					{
 						loadFailed = true;
 						data = NotFoundImage;
 					}
+					else
+					{
+						if (CreateThumbnails)
+							data = CreateThumbnail(data, ThumbnailHeigth, ThumbnailWidth);
+
+						if (data == null)
+						{
+							loadFailed = true;
+							data = NotFoundImage;
+						}
+					}
+
+					// Не кэшируем заглушку 404: иначе временный сбой сети навсегда
+					// «отравит» URL — на следующих запусках вернётся 404 без ретрая.
+					if (NeedSaveToCache && !loadFailed)
+						SaveToCache(url, data);
 				}
 
-				// Не кэшируем заглушку 404: иначе временный сбой сети навсегда
-				// «отравит» URL — на следующих запусках вернётся 404 без ретрая.
-				if (NeedSaveToCache && !loadFailed)
-					SaveToCache(url, data);
+				Images[url].Data = data;
+				return Images[url];
 			}
-
-			Images[url].Data = data;
-			Interlocked.Decrement(ref threadsCount);
-			return Images[url];
+			finally
+			{
+				Interlocked.Decrement(ref threadsCount);
+				throttle.Release();
+			}
 		}
 
 		public static byte[] CreateThumbnail(byte[] image, int h = 120, int w = 120)
@@ -316,6 +330,14 @@ namespace BatchImageLoaderLibrary
 		private string CurrentVariant()
 		{
 			return CreateThumbnails ? ThumbnailWidth + "x" + ThumbnailHeigth : "orig";
+		}
+
+		private SemaphoreSlim GetThrottle()
+		{
+			if (throttle != null)
+				return throttle;
+			lock (throttleLock)
+				return throttle ??= new SemaphoreSlim(MaxThreadsCount, MaxThreadsCount);
 		}
 
 		public static void ClearCacheForUrl(string url)
