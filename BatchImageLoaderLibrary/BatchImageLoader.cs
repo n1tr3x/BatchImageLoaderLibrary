@@ -21,6 +21,19 @@ namespace BatchImageLoaderLibrary
 		private static StorageFacade storage;
 		private static int imagesLoading = 0;
 
+		// Один разделяемый HttpClient на всю библиотеку: переиспользует пул
+		// соединений и не плодит сокеты в TIME_WAIT при пакетной загрузке.
+		// PooledConnectionLifetime заставляет периодически пересоздавать
+		// соединения, чтобы подхватывать изменения DNS у вечного клиента.
+		private static readonly HttpClient httpClient = new HttpClient(
+			new SocketsHttpHandler
+			{
+				PooledConnectionLifetime = TimeSpan.FromMinutes(5)
+			})
+		{
+			Timeout = TimeSpan.FromSeconds(30)
+		};
+
 		// Картинка-заглушка встроена в сборку (EmbeddedResource 404.png),
 		// чтобы не таскать файл рядом с exe. Загружается один раз.
 		private static readonly byte[] NotFoundImage = LoadNotFoundImage();
@@ -255,7 +268,6 @@ namespace BatchImageLoaderLibrary
 #endif
 			Interlocked.Increment(ref imagesLoading);
 			byte[] bytes = null;
-			HttpClient httpClient = new HttpClient();
 			try
 			{
 				bytes = await httpClient.GetByteArrayAsync(url);
