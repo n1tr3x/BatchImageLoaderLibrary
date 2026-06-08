@@ -15,7 +15,7 @@ namespace BatchImageLoaderLibrary
 	{
 		private static readonly object LockObject = new();
 		private static BatchImageLoader instance;
-		private static ConcurrentQueue<string> UrlQueue = new();
+		private static int imagesInQueue = 0;
 		private static ConcurrentDictionary<string, CachedImage> Images = new();
 		private static int threadsCount = 0;
 		private static StorageFacade storage;
@@ -70,9 +70,9 @@ namespace BatchImageLoaderLibrary
 
 		public int ImagesLoading => imagesLoading;
 
-		public int ImagesProcessing => UrlQueue.Count + ImagesLoading;
+		public int ImagesProcessing => imagesInQueue + ImagesLoading;
 
-		public int ImagesInQueue => UrlQueue.Count;
+		public int ImagesInQueue => imagesInQueue;
 
 		public bool CreateThumbnails { get; set; } = true;
 
@@ -164,87 +164,83 @@ namespace BatchImageLoaderLibrary
 					while (!Images[url].Loaded())
 					{
 #if DEBUG
-						Trace.WriteLine("Image " + url + " not loaded yet, wait 500 ms and check again, images left = " + UrlQueue.Count);
+						Trace.WriteLine("Image " + url + " not loaded yet, wait 500 ms and check again, images waiting = " + imagesInQueue);
 						Trace.WriteLine("Images loaded = " + LoadedPhotosCount + ", avg time = " + PhotosLoadingTime / LoadedPhotosCount + " ms");
 #endif
 						await Task.Delay(500);
 					}
 #if DEBUG
-					Trace.WriteLine("Image " + url + " loaded, ret image, images left = " + UrlQueue.Count);
+					Trace.WriteLine("Image " + url + " loaded, ret image, images waiting = " + imagesInQueue);
 #endif
 					return Images[url];
 				});
 			}
 
-			UrlQueue.Enqueue(url);
-			Images[url] = new CachedImage();
+			// Вызывающий сам и грузит свой url — без общей очереди, чтобы
+			// гарантированно вернуть картинку именно этого url (а не чужого).
 #if DEBUG
-			Trace.WriteLine("Image " + url + " enqueued");
+			Trace.WriteLine("Image " + url + " accepted for loading");
 #endif
-			return await ProcessUrlAsync();
+			return await ProcessUrlAsync(url);
 		}
 
-        private async Task<CachedImage> ProcessUrlAsync()
+        private async Task<CachedImage> ProcessUrlAsync(string url)
 		{
+			Interlocked.Increment(ref imagesInQueue);
 #if DEBUG
-			Trace.WriteLine("ProcessUrlAsync begin, ThreadsCount = " + ThreadCount + ", images left = " + UrlQueue.Count);
+			Trace.WriteLine("ProcessUrlAsync begin, ThreadsCount = " + ThreadCount + ", images waiting = " + imagesInQueue);
 #endif
 			while (threadsCount > MaxThreadsCount)
 				await Task.Delay(100);
 
-			string url;
-			if (UrlQueue.TryDequeue(out url))
+			Interlocked.Increment(ref threadsCount);
+			Interlocked.Decrement(ref imagesInQueue);
+#if DEBUG
+			Trace.WriteLine("Url " + url + " processing");
+#endif
+			// Размер превью (или orig) входит в ключ кэша, поэтому и чтение,
+			// и запись должны идти под одним вариантом.
+			storage.Variant = CurrentVariant();
+			byte[] data = LoadFromCache(url);
+			if (data == null)
 			{
-				Interlocked.Increment(ref threadsCount);
 #if DEBUG
-				Trace.WriteLine("Url " + url + " dequeued");
+				Trace.WriteLine("Trying to load " + url);
 #endif
-				// Размер превью (или orig) входит в ключ кэша, поэтому и чтение,
-				// и запись должны идти под одним вариантом.
-				storage.Variant = CurrentVariant();
-				byte[] data = LoadFromCache(url);
+				data = await LoadImage(url);
+#if DEBUG
 				if (data == null)
+					Trace.WriteLine("Url " + url + " NOT loaded, data is NULL");
+				else
+					Trace.WriteLine("Url " + url + " loaded, data len = " + data.Length);
+#endif
+				bool loadFailed = false;
+				if (data == null || data.Length == 0)
 				{
-#if DEBUG
-					Trace.WriteLine("Trying to load " + url);
-#endif
-					data = await LoadImage(url);
-#if DEBUG
+					loadFailed = true;
+					data = NotFoundImage;
+				}
+				else
+				{
+					if (CreateThumbnails)
+						data = CreateThumbnail(data, ThumbnailHeigth, ThumbnailWidth);
+
 					if (data == null)
-						Trace.WriteLine("Url " + url + " NOT loaded, data is NULL");
-					else
-						Trace.WriteLine("Url " + url + " loaded, data len = " + data.Length);
-#endif
-					bool loadFailed = false;
-					if (data == null || data.Length == 0)
 					{
 						loadFailed = true;
 						data = NotFoundImage;
 					}
-					else
-					{
-						if (CreateThumbnails)
-							data = CreateThumbnail(data, ThumbnailHeigth, ThumbnailWidth);
-
-						if (data == null)
-						{
-							loadFailed = true;
-							data = NotFoundImage;
-						}
-					}
-
-					// Не кэшируем заглушку 404: иначе временный сбой сети навсегда
-					// «отравит» URL — на следующих запусках вернётся 404 без ретрая.
-					if (NeedSaveToCache && !loadFailed)
-						SaveToCache(url, data);
 				}
 
-				Images[url].Data = data;
-				//Trace.WriteLine("Img with url " + url + " loaded, ret, image loading count = " + ImagesLoading);
-				Interlocked.Decrement(ref threadsCount);
-				return Images[url];
+				// Не кэшируем заглушку 404: иначе временный сбой сети навсегда
+				// «отравит» URL — на следующих запусках вернётся 404 без ретрая.
+				if (NeedSaveToCache && !loadFailed)
+					SaveToCache(url, data);
 			}
-			return null;
+
+			Images[url].Data = data;
+			Interlocked.Decrement(ref threadsCount);
+			return Images[url];
 		}
 
 		public static byte[] CreateThumbnail(byte[] image, int h = 120, int w = 120)
