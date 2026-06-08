@@ -5,6 +5,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Net.Http;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -19,6 +20,33 @@ namespace BatchImageLoaderLibrary
 		private static int threadsCount = 0;
 		private static StorageFacade storage;
 		private static int imagesLoading = 0;
+
+		// Картинка-заглушка встроена в сборку (EmbeddedResource 404.png),
+		// чтобы не таскать файл рядом с exe. Загружается один раз.
+		private static readonly byte[] NotFoundImage = LoadNotFoundImage();
+
+		private static byte[] LoadNotFoundImage()
+		{
+			try
+			{
+				Assembly assembly = Assembly.GetExecutingAssembly();
+				string resourceName = Array.Find(
+					assembly.GetManifestResourceNames(),
+					n => n.EndsWith("404.png", StringComparison.OrdinalIgnoreCase));
+
+				if (resourceName == null)
+					return Array.Empty<byte>();
+
+				using Stream stream = assembly.GetManifestResourceStream(resourceName);
+				using MemoryStream ms = new MemoryStream();
+				stream.CopyTo(ms);
+				return ms.ToArray();
+			}
+			catch
+			{
+				return Array.Empty<byte>();
+			}
+		}
 
 
 		public int ImagesLoaded => Images.Count;
@@ -175,7 +203,7 @@ namespace BatchImageLoaderLibrary
 					if (data == null || data.Length == 0)
 					{
 						loadFailed = true;
-						data = File.ReadAllBytes(@"404.png");
+						data = NotFoundImage;
 					}
 					else
 					{
@@ -185,7 +213,7 @@ namespace BatchImageLoaderLibrary
 						if (data == null)
 						{
 							loadFailed = true;
-							data = File.ReadAllBytes(@"404.png");
+							data = NotFoundImage;
 						}
 					}
 
