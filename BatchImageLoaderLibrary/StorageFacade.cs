@@ -32,7 +32,7 @@ namespace BatchImageLoaderLibrary
 				if (storageType == value)
 					return;
 				storageType = value;
-				
+				CreateStorage();
 			}
 		}
 

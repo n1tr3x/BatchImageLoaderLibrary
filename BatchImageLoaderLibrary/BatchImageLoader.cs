@@ -16,7 +16,7 @@ namespace BatchImageLoaderLibrary
 		private static readonly object LockObject = new();
 		private static BatchImageLoader instance;
 		private static int imagesInQueue = 0;
-		private static ConcurrentDictionary<string, CachedImage> Images = new();
+		private static ConcurrentDictionary<string, Lazy<Task<CachedImage>>> Images = new();
 		private static int threadsCount = 0;
 		private static StorageFacade storage;
 		private static int imagesLoading = 0;
@@ -88,7 +88,20 @@ namespace BatchImageLoaderLibrary
 
 		public bool NeedSaveToCache { get; set; } = true;
 
-		public static StorageType StorageType = StorageType.DB;
+		private static StorageType storageType = StorageType.DB;
+
+		public static StorageType StorageType
+		{
+			get => storageType;
+			set
+			{
+				storageType = value;
+				// Если хранилище уже создано — переключаем его на лету; иначе
+				// значение подхватит конструктор при первом обращении к Instance.
+				if (storage != null)
+					storage.StorageType = value;
+			}
+		}
 
 
 
@@ -147,47 +160,29 @@ namespace BatchImageLoaderLibrary
             }
         }*/
 
-		public async Task<CachedImage> GetImageFromUrl(string url)
+		public Task<CachedImage> GetImageFromUrl(string url)
 		{
 #if DEBUG
 			Trace.WriteLine("GetImageFromUrl " + url);
 #endif
-			if (!Images.TryAdd(url, new CachedImage()))
-			{
-				if (Images[url].Loaded())
-				{
-#if DEBUG
-					Trace.WriteLine("Image " + url + " already loaded, NOT enqueued, ret image");
-#endif
-					return Images[url];
-				}
-				return await Task.Run(async () =>
-				{
-#if DEBUG
-					Trace.WriteLine("Image " + url + " already enqueued, waiting for loading...");
-#endif
-					//int tryCount = 0;
-					while (!Images[url].Loaded())
-					{
-#if DEBUG
-						Trace.WriteLine("Image " + url + " not loaded yet, wait 500 ms and check again, images waiting = " + imagesInQueue);
-						Trace.WriteLine("Images loaded = " + LoadedPhotosCount + ", avg time = " + PhotosLoadingTime / LoadedPhotosCount + " ms");
-#endif
-						await Task.Delay(500);
-					}
-#if DEBUG
-					Trace.WriteLine("Image " + url + " loaded, ret image, images waiting = " + imagesInQueue);
-#endif
-					return Images[url];
-				});
-			}
+			// Один и тот же Task на каждый url: первый вызов запускает загрузку,
+			// остальные (текущие и будущие) ждут его же — без поллинга и без
+			// риска зависнуть; результат ИЛИ исключение получают все awaiter'ы.
+			return Images.GetOrAdd(url, u => new Lazy<Task<CachedImage>>(() => LoadAsync(u))).Value;
+		}
 
-			// Вызывающий сам и грузит свой url — без общей очереди, чтобы
-			// гарантированно вернуть картинку именно этого url (а не чужого).
-#if DEBUG
-			Trace.WriteLine("Image " + url + " accepted for loading");
-#endif
-			return await ProcessUrlAsync(url);
+		private async Task<CachedImage> LoadAsync(string url)
+		{
+			try
+			{
+				return await ProcessUrlAsync(url);
+			}
+			catch
+			{
+				// Не оставляем сбойную задачу в кэше — даём шанс повторить загрузку.
+				Images.TryRemove(url, out _);
+				throw;
+			}
 		}
 
         private async Task<CachedImage> ProcessUrlAsync(string url)
@@ -247,8 +242,7 @@ namespace BatchImageLoaderLibrary
 						SaveToCache(url, data);
 				}
 
-				Images[url].Data = data;
-				return Images[url];
+				return new CachedImage(data);
 			}
 			finally
 			{
@@ -296,7 +290,7 @@ namespace BatchImageLoaderLibrary
 			return bytes;
 		}
 
-		public async void LoadFromCache()
+		public async Task LoadFromCache()
 		{
 			// Предзагрузка тоже должна идти под текущим вариантом, иначе
 			// GetAll вернёт картинки не того размера (или ничего).
@@ -304,7 +298,7 @@ namespace BatchImageLoaderLibrary
 			Dictionary<string, byte[]> data = await storage.GetAll();
 			foreach ((string key, byte[] value) in data)
 			{
-				Images.TryAdd(key, new CachedImage(value));
+				Images.TryAdd(key, new Lazy<Task<CachedImage>>(Task.FromResult(new CachedImage(value))));
 			}
 		}
 
