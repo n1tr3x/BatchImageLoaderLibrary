@@ -199,9 +199,9 @@ namespace BatchImageLoaderLibrary
 #if DEBUG
 				Trace.WriteLine("Url " + url + " dequeued");
 #endif
-				// Размер превью (или orig) попадёт в имя файла кэша, поэтому
-				// и чтение, и запись должны идти под одним вариантом.
-				storage.FileVariant = CurrentVariant();
+				// Размер превью (или orig) входит в ключ кэша, поэтому и чтение,
+				// и запись должны идти под одним вариантом.
+				storage.Variant = CurrentVariant();
 				byte[] data = LoadFromCache(url);
 				if (data == null)
 				{
@@ -288,6 +288,9 @@ namespace BatchImageLoaderLibrary
 
 		public async void LoadFromCache()
 		{
+			// Предзагрузка тоже должна идти под текущим вариантом, иначе
+			// GetAll вернёт картинки не того размера (или ничего).
+			storage.Variant = CurrentVariant();
 			Dictionary<string, byte[]> data = await storage.GetAll();
 			foreach ((string key, byte[] value) in data)
 			{

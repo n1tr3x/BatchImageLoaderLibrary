@@ -2,6 +2,10 @@
 {
 	internal interface IDataProvider
 	{
+		// Вариант кэшируемой картинки (размер превью "120x120" или "orig").
+		// Входит в ключ кэша: имя файла у FILE, часть составного PK у DB.
+		public string Variant { get; set; }
+
 		public byte[] Get(string key);
 
 		public Task<Dictionary<string, byte[]>> GetAll();

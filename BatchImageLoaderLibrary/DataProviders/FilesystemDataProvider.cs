@@ -81,9 +81,13 @@ namespace BatchImageLoaderLibrary.DataProviders
 
 		public void Remove(string filename)
 		{
-			string path = Path.Combine(CacheDirectory, NormalizeUrl(filename));
-			if (Directory.Exists(CacheDirectory) && File.Exists(path))
-				File.Delete(path);
+			if (!Directory.Exists(CacheDirectory))
+				return;
+
+			// Удаляем ВСЕ варианты (размеры) этого URL: {hash}_*.jpg.
+			string pattern = Hash(filename) + "_*.jpg";
+			foreach (string file in Directory.GetFiles(CacheDirectory, pattern))
+				File.Delete(file);
 		}
 
 		public void RemoveAll()
@@ -92,19 +96,18 @@ namespace BatchImageLoaderLibrary.DataProviders
 				Directory.Delete(CacheDirectory, true);
 		}
 
+		// SHA1 от URL — стабильная часть имени, общая для всех вариантов.
+		private string Hash(string url)
+		{
+            using var sha1 = SHA1.Create();
+            var hashBytes = sha1.ComputeHash(Encoding.UTF8.GetBytes(url));
+            return BitConverter.ToString(hashBytes).Replace("-", "").ToLowerInvariant();
+        }
+
+		// Имя файла конкретного варианта: {hash}_{variant}.jpg
 		private string NormalizeUrl(string url)
 		{
-            // Считаем SHA1 от URL, чтобы имена были короткие и уникальные,
-            // и дописываем вариант (размер превью / orig) в конец имени.
-            string hash;
-            using (var sha1 = SHA1.Create())
-            {
-                var bytes = Encoding.UTF8.GetBytes(url);
-                var hashBytes = sha1.ComputeHash(bytes);
-                hash = BitConverter.ToString(hashBytes).Replace("-", "").ToLowerInvariant();
-            }
-
-            return hash + "_" + Variant + ".jpg";
+            return Hash(url) + "_" + Variant + ".jpg";
         }
 	}
 }

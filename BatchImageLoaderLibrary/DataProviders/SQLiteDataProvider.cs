@@ -8,19 +8,30 @@ namespace BatchImageLoaderLibrary.DataProviders
 	{
 		private SqliteConnection DBConnection;
 
+		// Вариант картинки (размер превью / "orig"), часть составного ключа.
+		public string Variant { get; set; } = "orig";
+
 		public SQLiteDataProvider(string dbName)
 		{
-			if (!File.Exists(dbName))
+			DBConnection = new SqliteConnection(@"Data Source=" + dbName);
+			DBConnection.Open();
+			EnsureSchema();
+		}
+
+		private void EnsureSchema()
+		{
+			// Версионируем схему. Всё, что старее v1 (включая таблицу старого
+			// формата без колонки variant), просто сбрасываем — это кэш,
+			// мигрировать данные не нужно.
+			long version;
+			using (SqliteCommand get = new SqliteCommand("PRAGMA user_version", DBConnection))
+				version = (long)get.ExecuteScalar();
+
+			if (version < 1)
 			{
-				DBConnection = new SqliteConnection(@"Data Source=" + dbName);
-				DBConnection.Open();
-				string sql = "CREATE TABLE IF NOT EXISTS images (path TEXT PRIMARY KEY, data BLOB NOT NULL)";
-				SqliteCommand command = new SqliteCommand(sql, DBConnection);
-				command.ExecuteNonQuery();
-			}
-			else
-			{
-				DBConnection = new SqliteConnection(@"Data Source=" + dbName);
+				new SqliteCommand("DROP TABLE IF EXISTS images", DBConnection).ExecuteNonQuery();
+				new SqliteCommand("CREATE TABLE images (path TEXT, variant TEXT, data BLOB NOT NULL, PRIMARY KEY(path, variant))", DBConnection).ExecuteNonQuery();
+				new SqliteCommand("PRAGMA user_version = 1", DBConnection).ExecuteNonQuery();
 			}
 		}
 
@@ -28,9 +39,10 @@ namespace BatchImageLoaderLibrary.DataProviders
 		{
 			if (DBConnection.State != ConnectionState.Open)
 				DBConnection.Open();
-			string sql = "SELECT data FROM Images WHERE path = @path";
+			string sql = "SELECT data FROM Images WHERE path = @path AND variant = @variant";
 			SqliteCommand command = new SqliteCommand(sql, DBConnection);
 			command.Parameters.AddWithValue("@path", path);
+			command.Parameters.AddWithValue("@variant", Variant);
 
 			SqliteDataReader reader = command.ExecuteReader();
 
@@ -45,13 +57,14 @@ namespace BatchImageLoaderLibrary.DataProviders
 			Dictionary<string, byte[]> result = new Dictionary<string, byte[]>();
 			if (DBConnection.State != ConnectionState.Open)
 				DBConnection.Open();
-			string sql = "SELECT * FROM Images";
+			string sql = "SELECT path, data FROM Images WHERE variant = @variant";
 			SqliteCommand command = new SqliteCommand(sql, DBConnection);
+			command.Parameters.AddWithValue("@variant", Variant);
 			SqliteDataReader reader = await command.ExecuteReaderAsync();
 
 			while (await reader.ReadAsync())
 			{
-				result.Add((string)reader["path"], (byte[])reader["data"]);
+				result[(string)reader["path"]] = (byte[])reader["data"];
 			}
 
 			return result;
@@ -62,9 +75,10 @@ namespace BatchImageLoaderLibrary.DataProviders
 			if (DBConnection.State != ConnectionState.Open)
 				DBConnection.Open();
 
-			string sql = "INSERT OR REPLACE INTO Images (path, data) VALUES(@path, @data)";
+			string sql = "INSERT OR REPLACE INTO Images (path, variant, data) VALUES(@path, @variant, @data)";
 			SqliteCommand command = new SqliteCommand(sql, DBConnection);
 			command.Parameters.AddWithValue("@path", path);
+			command.Parameters.AddWithValue("@variant", Variant);
 			command.Parameters.Add(@"data", SqliteType.Blob, data.Length).Value = data;
 			command.ExecuteNonQuery();
 		}
@@ -74,9 +88,10 @@ namespace BatchImageLoaderLibrary.DataProviders
 			if (DBConnection.State != ConnectionState.Open)
 				DBConnection.Open();
 
-			string sql = "UPDATE Images SET data = @data WHERE path = @path";
+			string sql = "UPDATE Images SET data = @data WHERE path = @path AND variant = @variant";
 			SqliteCommand command = new SqliteCommand(sql, DBConnection);
 			command.Parameters.AddWithValue("@path", path);
+			command.Parameters.AddWithValue("@variant", Variant);
 			command.Parameters.Add(@"data", SqliteType.Blob, data.Length).Value = data;
 			command.ExecuteNonQuery();
 		}
@@ -86,6 +101,7 @@ namespace BatchImageLoaderLibrary.DataProviders
 			if (DBConnection.State != ConnectionState.Open)
 				DBConnection.Open();
 
+			// Удаляем ВСЕ варианты (размеры) этого URL, а не только текущий.
 			string sql = "DELETE FROM Images WHERE path = @path";
 			SqliteCommand command = new SqliteCommand(sql, DBConnection);
 			command.Parameters.AddWithValue("@path", path);
