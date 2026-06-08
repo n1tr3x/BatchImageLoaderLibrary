@@ -62,7 +62,7 @@ namespace BatchImageLoaderLibrary.DataProviders
 			if (DBConnection.State != ConnectionState.Open)
 				DBConnection.Open();
 
-			string sql = "INSERT INTO Images (path, data) VALUES(@path, @data)";
+			string sql = "INSERT OR REPLACE INTO Images (path, data) VALUES(@path, @data)";
 			SqliteCommand command = new SqliteCommand(sql, DBConnection);
 			command.Parameters.AddWithValue("@path", path);
 			command.Parameters.Add(@"data", SqliteType.Blob, data.Length).Value = data;

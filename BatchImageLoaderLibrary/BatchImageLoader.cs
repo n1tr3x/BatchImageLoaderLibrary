@@ -171,8 +171,10 @@ namespace BatchImageLoaderLibrary
 					else
 						Trace.WriteLine("Url " + url + " loaded, data len = " + data.Length);
 #endif
+					bool loadFailed = false;
 					if (data == null || data.Length == 0)
 					{
+						loadFailed = true;
 						data = File.ReadAllBytes(@"404.png");
 					}
 					else
@@ -181,10 +183,15 @@ namespace BatchImageLoaderLibrary
 							data = CreateThumbnail(data);
 
 						if (data == null)
+						{
+							loadFailed = true;
 							data = File.ReadAllBytes(@"404.png");
+						}
 					}
 
-					if (NeedSaveToCache)
+					// Не кэшируем заглушку 404: иначе временный сбой сети навсегда
+					// «отравит» URL — на следующих запусках вернётся 404 без ретрая.
+					if (NeedSaveToCache && !loadFailed)
 						SaveToCache(url, data);
 				}
 

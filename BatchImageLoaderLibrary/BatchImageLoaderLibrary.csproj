@@ -14,9 +14,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <None Update="404.png">
-      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
-    </None>
+    <EmbeddedResource Include="404.png" />
   </ItemGroup>
 
 </Project>
