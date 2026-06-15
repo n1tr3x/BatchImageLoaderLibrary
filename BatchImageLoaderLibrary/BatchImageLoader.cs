@@ -29,24 +29,60 @@ namespace BatchImageLoaderLibrary
 		private static SemaphoreSlim? throttle;
 		private static readonly object throttleLock = new();
 
+		// Сколько раз пробуем установить соединение и максимум на ОДНУ попытку.
+		// Свой дедлайн на попытку нужен, чтобы единичный «зависший» SYN не сжёг весь
+		// 30-секундный бюджет запроса и не вылез наружу как "The operation was canceled".
+		private const int ConnectAttempts = 3;
+		private static readonly TimeSpan ConnectAttemptTimeout = TimeSpan.FromSeconds(8);
+
 		// Привязка исходящего сокета к локальному порту вне зарезервированных WinNAT диапазонов
-		// (Hyper-V/WSL/Docker), иначе connect падает с SocketException 10013.
+		// (Hyper-V/WSL/Docker), иначе connect падает с SocketException 10013 (WSAEACCES).
 		private static async ValueTask<Stream> ConnectViaSafeLocalPort(SocketsHttpConnectionContext context, CancellationToken cancellationToken)
 		{
-			Socket socket = new(SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
-			try
+			Exception? lastError = null;
+			for (int attempt = 1; attempt <= ConnectAttempts; attempt++)
 			{
-				bool bound = false;
-				for (int i = 0; i < 64 && !bound; i++)
+				// Если запрос уже отменён снаружи (закрыли форму / истёк общий таймаут) — выходим сразу.
+				cancellationToken.ThrowIfCancellationRequested();
+
+				Socket socket = new(SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
+				// Отдельный дедлайн на попытку, связанный с внешней отменой.
+				using CancellationTokenSource attemptCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+				attemptCts.CancelAfter(ConnectAttemptTimeout);
+				try
 				{
-					try { socket.Bind(new IPEndPoint(IPAddress.Any, 20000 + Random.Shared.Next(0, 29000))); bound = true; }
-					catch (SocketException) { }
+					BindToSafeLocalPort(socket);
+					await socket.ConnectAsync(context.DnsEndPoint, attemptCts.Token).ConfigureAwait(false);
+					return new NetworkStream(socket, ownsSocket: true);
 				}
-				if (!bound) socket.Bind(new IPEndPoint(IPAddress.Any, 0));
-				await socket.ConnectAsync(context.DnsEndPoint, cancellationToken);
-				return new NetworkStream(socket, ownsSocket: true);
+				catch (Exception ex)
+				{
+					socket.Dispose();
+
+					// Настоящая отмена запроса (а не наш per-attempt таймаут) — пробрасываем,
+					// чтобы HttpClient корректно отчитался об отмене/таймауте.
+					if (cancellationToken.IsCancellationRequested)
+						throw new OperationCanceledException("Загрузка изображения отменена.", ex, cancellationToken);
+
+					// Иначе это таймаут попытки или транзиентный сбой сокета (10013 и т.п.) — пробуем ещё раз.
+					lastError = ex;
+				}
 			}
-			catch { socket.Dispose(); throw; }
+
+			// Все попытки исчерпаны: внятная ошибка вместо «The operation was canceled».
+			// Выше по стеку LoadImage её залогирует и подставит заглушку 404.
+			throw new HttpRequestException($"Не удалось подключиться к {context.DnsEndPoint.Host} за {ConnectAttempts} попыток.", lastError);
+		}
+
+		private static void BindToSafeLocalPort(Socket socket)
+		{
+			// Пользовательский диапазон 20000..48999 — ниже эфемерного (49152+), где сидят резервы WinNAT.
+			for (int i = 0; i < 64; i++)
+			{
+				try { socket.Bind(new IPEndPoint(IPAddress.Any, 20000 + Random.Shared.Next(0, 29000))); return; }
+				catch (SocketException) { /* порт занят — берём другой */ }
+			}
+			socket.Bind(new IPEndPoint(IPAddress.Any, 0)); // крайний случай — пусть выбирает ОС
 		}
 
 		// Один разделяемый HttpClient на всю библиотеку: переиспользует пул
