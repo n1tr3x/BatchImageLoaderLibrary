@@ -1,10 +1,13 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <!-- net6, чтобы либу могли подцепить ВСЕ потребители (есть net6.0-windows).
-         net6 EOL, но это самый низкий общий знаменатель; наг про EOL глушим осознанно. -->
+    <!-- Минимальный Windows-таргет: -windows обязателен (WPF/GDI+/NTFS ADS),
+         а ниже net6 смысла нет (net5/netcoreapp3.1 — EOL без выгод).
+         net6 тоже EOL — наг про EOL глушим осознанно. -->
     <TargetFramework>net6.0-windows</TargetFramework>
     <CheckEolTargetFramework>false</CheckEolTargetFramework>
+    <!-- Разрешает сборку/publish Windows-таргета на Linux-раннере CI. -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <!-- Нужен для WPF-вывода CachedImage.ToBitmapImage(); WinForms-потребители не затрагиваются. -->
@@ -13,7 +16,7 @@
 
   <PropertyGroup>
     <PackageId>BatchImageLoaderLibrary</PackageId>
-    <Version>1.0.0</Version>
+    <Version>1.0.7</Version>
     <Authors>n1tr3x</Authors>
     <Description>Batch image loader with on-disk and SQLite caching.</Description>
     <RepositoryUrl>https://github.com/n1tr3x/BatchImageLoaderLibrary</RepositoryUrl>
