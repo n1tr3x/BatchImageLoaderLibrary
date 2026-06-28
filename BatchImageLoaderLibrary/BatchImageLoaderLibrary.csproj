@@ -22,6 +22,7 @@
     <RepositoryUrl>https://github.com/n1tr3x/BatchImageLoaderLibrary</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
     <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
   </PropertyGroup>
 
@@ -33,6 +34,8 @@
 
   <ItemGroup>
     <EmbeddedResource Include="404.png" />
+    <!-- README лежит в корне репозитория (на уровень выше csproj); кладём в корень пакета. -->
+    <None Include="..\README.md" Pack="true" PackagePath="\" />
   </ItemGroup>
 
 </Project>
