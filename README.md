@@ -17,8 +17,8 @@ Built for the common desktop scenario: you have a long list of image URLs (e.g. 
 
 ## Requirements
 
-- **.NET 8** (`net8.0-windows`)
-- **Windows** — the library uses `System.Drawing` (GDI+) for thumbnails and NTFS Alternate Data Streams in the filesystem backend.
+- **.NET 6** (`net6.0-windows`) — referenceable from net6 / net8 / net9 Windows consumers.
+- **Windows** — uses `System.Drawing` (GDI+) for thumbnails, WPF imaging for `ToBitmapImage()`, and NTFS Alternate Data Streams in the filesystem backend.
 
 ## Installation
 
@@ -83,7 +83,8 @@ byte[]? Data { get; set; }
 bool   Loaded();          // has non-empty data
 int    Size();            // byte length (0 if empty)
 byte[]? ToByteArray();
-Image? ToImage();         // decode to System.Drawing.Image (null on failure)
+Image? ToImage();              // decode to System.Drawing.Image — WinForms (null on failure)
+BitmapImage? ToBitmapImage();  // decode to WPF BitmapImage, frozen & thread-safe (null on failure)
 ```
 
 ### `StorageType`

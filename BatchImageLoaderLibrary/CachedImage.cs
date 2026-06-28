@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using System.Drawing;
+using System.IO;
+using System.Windows.Media.Imaging;
 
 namespace BatchImageLoaderLibrary
 {
@@ -54,6 +56,32 @@ namespace BatchImageLoaderLibrary
 			{
 				Trace.WriteLine("ToImage failed: " + ex.Message);
 				ms.Dispose();
+				return null;
+			}
+		}
+
+		// WPF-вывод. BitmapCacheOption.OnLoad декодирует сразу, поэтому поток можно
+		// сразу закрыть; Freeze() делает картинку потокобезопасной — можно создавать
+		// в фоновом потоке и присваивать в UI без диспетчера.
+		public BitmapImage? ToBitmapImage()
+		{
+			if (data == null || data.Length == 0)
+				return null;
+
+			try
+			{
+				using MemoryStream ms = new MemoryStream(data);
+				BitmapImage bmp = new BitmapImage();
+				bmp.BeginInit();
+				bmp.CacheOption = BitmapCacheOption.OnLoad;
+				bmp.StreamSource = ms;
+				bmp.EndInit();
+				bmp.Freeze();
+				return bmp;
+			}
+			catch (Exception ex)
+			{
+				Trace.WriteLine("ToBitmapImage failed: " + ex.Message);
 				return null;
 			}
 		}

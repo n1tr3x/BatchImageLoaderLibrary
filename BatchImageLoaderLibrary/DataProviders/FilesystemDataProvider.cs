@@ -1,6 +1,7 @@
 ﻿using BatchImageLoaderLibrary.DataProviders.Interfaces;
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.IO;
 using System.Security.Cryptography;
 using System.Text;
 using Trinet.Core.IO.Ntfs;
