@@ -14,6 +14,7 @@ Built for the common desktop scenario: you have a long list of image URLs (e.g. 
 - **Shared, pooled `HttpClient`** with a request timeout — no socket exhaustion under heavy batches.
 - **Embedded 404 placeholder** — failed loads return a built-in stub and are *not* cached, so a transient network error never permanently poisons a URL.
 - **Thread-safe** — designed to be hammered from many threads at once.
+- **Opt-in detailed file log** — off by default; point it at a file and every step (request, dedup, queue/throttle, connect attempts, HTTP timing, cache hit/miss, thumbnailing) is recorded.
 
 ## Requirements
 
@@ -59,10 +60,33 @@ All flags are set on `BatchImageLoader.Instance` (except `StorageType`, which is
 | `ThumbnailWidth` | `120` | Thumbnail width. |
 | `ThumbnailHeigth` | `120` | Thumbnail height *(sic — the property name is misspelled)*. |
 | `NeedSaveToCache` | `true` | Persist successfully loaded images to the cache. |
+| `BatchImageLoader.LogFile` | `null` | Path to a detailed log file. `null`/empty = logging off (default); set a path to turn it on. |
 
 ### Progress counters (read-only)
 
 `ImagesLoaded`, `ImagesLoading`, `ImagesInQueue`, `ImagesProcessing`, `ThreadCount` — useful for status displays and back-pressure (e.g. keep enqueuing while `ImagesProcessing < N`).
+
+### Detailed logging
+
+Off by default. Set `BatchImageLoader.LogFile` to a path to record every step — request, de-duplication, queue/throttle waits, connect attempts (with local port), HTTP timing and sizes, cache hit/miss, thumbnailing, and errors — appended with a timestamp and thread id. Set it back to `null` to stop.
+
+```csharp
+BatchImageLoader.LogFile = @"C:\logs\images.log";   // on
+// ... work ...
+BatchImageLoader.LogFile = null;                    // off
+```
+
+It's a diagnostic aid: when enabled it writes a line per step (flushed immediately) and noticeably slows heavy batches. A sample of the output:
+
+```
+00:11:59.559 [t01] slot   : https://…/FuUX96lEgdw.jpg?… (waited=0ms, threads=1)
+00:11:59.570 [t01] cache  : https://…/FuUX96lEgdw.jpg?… -> miss
+00:11:59.637 [t05] connect: sun9-24.userapi.com:443 attempt 1/3 from [::ffff:0:0]:27043
+00:12:00.513 [t10] conn-ok: sun9-24.userapi.com via [::ffff:192.168.18.85]:27043 (attempt 1)
+00:12:00.829 [t10] http-ok: https://…/FuUX96lEgdw.jpg?… -> 160172 bytes in 1258ms
+00:12:00.849 [t10] thumb  : https://…/FuUX96lEgdw.jpg?… 160172 -> 3731 bytes (120x120)
+00:12:00.860 [t10] done   : https://…/FuUX96lEgdw.jpg?… (total=1300ms, 3731 bytes)
+```
 
 ## Public API
 
@@ -74,6 +98,7 @@ Task LoadFromCache();                            // preload persistent cache int
 static void ClearCacheForUrl(string url);        // drop all sizes of one URL from the cache
 static void ClearCache();                        // wipe the whole cache
 static byte[]? CreateThumbnail(byte[] image, int h = 120, int w = 120);
+static string? LogFile { get; set; }             // detailed log file path; null = off (default)
 ```
 
 ### `CachedImage`

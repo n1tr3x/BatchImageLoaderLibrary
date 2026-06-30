@@ -16,6 +16,7 @@ namespace BatchImageLoaderLibrary.DataProviders
 		public SQLiteDataProvider(string dbName)
 		{
 			connectionString = "Data Source=" + dbName;
+			FileLog.Write("sqlite : open " + dbName);
 			using SqliteConnection connection = OpenConnection();
 			EnsureSchema(connection);
 		}
@@ -50,9 +51,14 @@ namespace BatchImageLoaderLibrary.DataProviders
 
 			if (version < 1)
 			{
+				FileLog.Write("sqlite : schema v" + version + " -> v1 (reset table)");
 				Execute(connection, "DROP TABLE IF EXISTS images");
 				Execute(connection, "CREATE TABLE images (path TEXT, variant TEXT, data BLOB NOT NULL, PRIMARY KEY(path, variant))");
 				Execute(connection, "PRAGMA user_version = 1");
+			}
+			else
+			{
+				FileLog.Write("sqlite : schema v" + version + " ok (WAL)");
 			}
 		}
 

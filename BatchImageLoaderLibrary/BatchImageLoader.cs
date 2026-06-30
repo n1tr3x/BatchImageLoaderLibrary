@@ -52,12 +52,18 @@ namespace BatchImageLoaderLibrary
 				try
 				{
 					BindToSafeLocalPort(socket);
+					if (FileLog.Enabled)
+						FileLog.Write("connect: " + context.DnsEndPoint.Host + ":" + context.DnsEndPoint.Port +
+							" attempt " + attempt + "/" + ConnectAttempts + " from " + socket.LocalEndPoint);
 					await socket.ConnectAsync(context.DnsEndPoint, attemptCts.Token).ConfigureAwait(false);
+					FileLog.Write("conn-ok: " + context.DnsEndPoint.Host + " via " + socket.LocalEndPoint + " (attempt " + attempt + ")");
 					return new NetworkStream(socket, ownsSocket: true);
 				}
 				catch (Exception ex)
 				{
 					socket.Dispose();
+					FileLog.Write("conn-x : " + context.DnsEndPoint.Host + " attempt " + attempt + ": " +
+						ex.GetType().Name + ": " + ex.Message);
 
 					// Настоящая отмена запроса (а не наш per-attempt таймаут) — пробрасываем,
 					// чтобы HttpClient корректно отчитался об отмене/таймауте.
@@ -165,6 +171,15 @@ namespace BatchImageLoaderLibrary
 			}
 		}
 
+		// Путь к файлу детального лога. null/пусто = логирование ВЫКЛЮЧЕНО
+		// (по умолчанию). Установка пути включает подробную запись всех
+		// операций в этот файл (дозапись). Только для диагностики.
+		public static string? LogFile
+		{
+			get => FileLog.Path;
+			set => FileLog.Configure(value);
+		}
+
 
 
 		private BatchImageLoader()
@@ -217,9 +232,8 @@ namespace BatchImageLoaderLibrary
 
 		public Task<CachedImage> GetImageFromUrl(string url)
 		{
-#if DEBUG
-			Trace.WriteLine("GetImageFromUrl " + url);
-#endif
+			if (FileLog.Enabled)
+				FileLog.Write("request : " + url + " (known=" + Images.ContainsKey(url) + ")");
 			// Один и тот же Task на каждый url: первый вызов запускает загрузку,
 			// остальные (текущие и будущие) ждут его же — без поллинга и без
 			// риска зависнуть; результат ИЛИ исключение получают все awaiter'ы.
@@ -232,9 +246,10 @@ namespace BatchImageLoaderLibrary
 			{
 				return await ProcessUrlAsync(url);
 			}
-			catch
+			catch (Exception ex)
 			{
 				// Не оставляем сбойную задачу в кэше — даём шанс повторить загрузку.
+				FileLog.Write("evict  : " + url + " after error " + ex.GetType().Name + ": " + ex.Message);
 				Images.TryRemove(url, out _);
 				throw;
 			}
@@ -243,60 +258,64 @@ namespace BatchImageLoaderLibrary
         private async Task<CachedImage> ProcessUrlAsync(string url)
 		{
 			Interlocked.Increment(ref imagesInQueue);
-#if DEBUG
-			Trace.WriteLine("ProcessUrlAsync begin, ThreadsCount = " + ThreadCount + ", images waiting = " + imagesInQueue);
-#endif
+			FileLog.Write("queue+ : " + url + " (waiting=" + imagesInQueue + ", threads=" + threadsCount + ")");
+
 			// Жёсткий лимит параллелизма: семафор не протекает (в отличие от
 			// прежней проверки threadsCount ДО инкремента) и не крутит busy-wait.
 			SemaphoreSlim throttle = GetThrottle();
+			Stopwatch waitSw = Stopwatch.StartNew();
 			await throttle.WaitAsync();
+			waitSw.Stop();
 			Interlocked.Increment(ref threadsCount);
 			Interlocked.Decrement(ref imagesInQueue);
+			FileLog.Write("slot   : " + url + " (waited=" + waitSw.ElapsedMilliseconds + "ms, threads=" + threadsCount + ")");
+
+			Stopwatch sw = Stopwatch.StartNew();
 			try
 			{
-#if DEBUG
-				Trace.WriteLine("Url " + url + " processing");
-#endif
 				// Размер превью (или orig) входит в ключ кэша, поэтому и чтение,
 				// и запись должны идти под одним вариантом.
 				storage.Variant = CurrentVariant();
 				byte[]? data = LoadFromCache(url);
 				if (data == null)
 				{
-#if DEBUG
-					Trace.WriteLine("Trying to load " + url);
-#endif
 					data = await LoadImage(url);
-#if DEBUG
-					if (data == null)
-						Trace.WriteLine("Url " + url + " NOT loaded, data is NULL");
-					else
-						Trace.WriteLine("Url " + url + " loaded, data len = " + data.Length);
-#endif
 					bool loadFailed = false;
 					if (data == null || data.Length == 0)
 					{
 						loadFailed = true;
 						data = NotFoundImage;
+						FileLog.Write("dl-fail: " + url + " -> 404 placeholder (" + data.Length + " bytes)");
 					}
 					else
 					{
 						if (CreateThumbnails)
+						{
+							int before = data.Length;
 							data = CreateThumbnail(data, ThumbnailHeigth, ThumbnailWidth);
+							FileLog.Write("thumb  : " + url + " " + before + " -> " + (data?.Length ?? 0) +
+								" bytes (" + CurrentVariant() + ")");
+						}
 
 						if (data == null)
 						{
 							loadFailed = true;
 							data = NotFoundImage;
+							FileLog.Write("thumb-x: " + url + " -> 404 placeholder");
 						}
 					}
 
 					// Не кэшируем заглушку 404: иначе временный сбой сети навсегда
 					// «отравит» URL — на следующих запусках вернётся 404 без ретрая.
 					if (NeedSaveToCache && !loadFailed)
+					{
 						SaveToCache(url, data);
+						FileLog.Write("cached : " + url + " (" + data.Length + " bytes, variant=" + CurrentVariant() + ")");
+					}
 				}
 
+				sw.Stop();
+				FileLog.Write("done   : " + url + " (total=" + sw.ElapsedMilliseconds + "ms, " + data.Length + " bytes)");
 				return new CachedImage(data);
 			}
 			finally
@@ -319,6 +338,7 @@ namespace BatchImageLoaderLibrary
 			}
 			catch (Exception e)
 			{
+				FileLog.Write("thumb-x: " + e.GetType().Name + ": " + e.Message);
 				Trace.WriteLine("CreateThumbnail failed: " + e.Message);
 				return null;
 			}
@@ -326,17 +346,19 @@ namespace BatchImageLoaderLibrary
 
 		private static async Task<byte[]?> LoadImage(string url)
 		{
-#if DEBUG
-			Trace.WriteLine("LoadImage " + url);
-#endif
+			FileLog.Write("http   : GET " + url);
 			Interlocked.Increment(ref imagesLoading);
+			Stopwatch sw = Stopwatch.StartNew();
 			byte[]? bytes = null;
 			try
 			{
 				bytes = await httpClient.GetByteArrayAsync(url);
+				FileLog.Write("http-ok: " + url + " -> " + bytes.Length + " bytes in " + sw.ElapsedMilliseconds + "ms");
 			}
 			catch (Exception e)
 			{
+				FileLog.Write("http-x : " + url + " FAILED in " + sw.ElapsedMilliseconds + "ms: " +
+					e.GetType().Name + ": " + e.Message);
 				Trace.WriteLine("LoadImage failed for " + url + ": " + e.Message);
 			}
 
@@ -349,22 +371,20 @@ namespace BatchImageLoaderLibrary
 			// Предзагрузка тоже должна идти под текущим вариантом, иначе
 			// GetAll вернёт картинки не того размера (или ничего).
 			storage.Variant = CurrentVariant();
+			FileLog.Write("preload: reading cache (variant=" + CurrentVariant() + ", storage=" + StorageType + ")");
 			Dictionary<string, byte[]> data = await storage.GetAll();
 			foreach ((string key, byte[] value) in data)
 			{
 				Images.TryAdd(key, new Lazy<Task<CachedImage>>(Task.FromResult(new CachedImage(value))));
 			}
+			FileLog.Write("preload: " + data.Count + " images loaded into memory");
 		}
 
 		private static byte[]? LoadFromCache(string url)
 		{
-#if DEBUG
-			Trace.WriteLine("Try to LoadFromCache " + url);
-#endif
 			byte[]? result = storage.Get(url);
-#if DEBUG
-			Trace.WriteLine("LoadFromCache " + url + (result != null ? " success" : " failed"));
-#endif
+			if (FileLog.Enabled)
+				FileLog.Write("cache  : " + url + " -> " + (result != null ? "HIT " + result.Length + " bytes" : "miss"));
 			return result;
 		}
 
@@ -393,11 +413,13 @@ namespace BatchImageLoaderLibrary
 
 		public static void ClearCacheForUrl(string url)
 		{
+			FileLog.Write("clear  : " + url);
 			storage.Remove(url);
 		}
 
 		public static void ClearCache()
 		{
+			FileLog.Write("clear  : ALL");
 			storage.RemoveAll();
 		}
 	}
