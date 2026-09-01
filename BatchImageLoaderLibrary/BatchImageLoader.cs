@@ -539,5 +539,33 @@ namespace BatchImageLoaderLibrary
 			Images.Clear();
 			Storage.RemoveAll();
 		}
+
+		// Встроенная заглушка 404 — тестам, чтобы сравнивать и проверять декодер.
+		internal static byte[] PlaceholderBytes => NotFoundImage;
+
+		// Только для тестов: полный сброс статического состояния синглтона,
+		// чтобы каждый тест начинал с чистого загрузчика и своих путей.
+		internal static void ResetForTests()
+		{
+			lock (LockObject)
+			{
+				Images.Clear();
+				instance = null;
+				storage = null!;
+				throttle?.Dispose();
+				throttle = null;
+				httpClient?.Dispose();
+				httpClient = null;
+				HttpHandler = null;
+				RequestTimeout = TimeSpan.FromSeconds(30);
+				MaxImageBytes = 64L * 1024 * 1024;
+				storageType = StorageType.DB;
+				imagesInQueue = 0;
+				threadsCount = 0;
+				imagesLoading = 0;
+				// Пул SQLite держит файл базы открытым — иначе временный каталог не удалить.
+				Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+			}
+		}
 	}
 }
