@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -22,6 +22,13 @@ namespace BatchImageLoaderLibrary
 		private static int threadsCount = 0;
 		private static StorageFacade storage = null!;
 		private static int imagesLoading = 0;
+
+		// Пути кэша: абсолютные, по умолчанию рядом с исполняемым файлом (а не
+		// относительно текущего каталога процесса, который меняют OpenFileDialog,
+		// ярлыки и планировщик). Можно задать до первого обращения к Instance
+		// или позже — тогда провайдер пересоздаётся.
+		private static string cacheDirectory = System.IO.Path.Combine(AppContext.BaseDirectory, "cache");
+		private static string databasePath = System.IO.Path.Combine(AppContext.BaseDirectory, "BatchImageLoaderLibraryCache.sqlite");
 
 		// Жёсткий лимит параллелизма загрузок. Создаётся лениво из текущего
 		// MaxThreadsCount при первой загрузке, поэтому значение нужно задать
@@ -171,6 +178,31 @@ namespace BatchImageLoaderLibrary
 			}
 		}
 
+		// Каталог файлового кэша (StorageType.FILE). Относительный путь
+		// разрешается один раз, в момент присваивания.
+		public static string CacheDirectory
+		{
+			get => cacheDirectory;
+			set
+			{
+				cacheDirectory = System.IO.Path.GetFullPath(value);
+				if (storage != null)
+					storage.CacheDirectory = cacheDirectory;
+			}
+		}
+
+		// Путь к файлу SQLite-кэша (StorageType.DB).
+		public static string DatabasePath
+		{
+			get => databasePath;
+			set
+			{
+				databasePath = System.IO.Path.GetFullPath(value);
+				if (storage != null)
+					storage.DatabasePath = databasePath;
+			}
+		}
+
 		// Путь к файлу детального лога. null/пусто = логирование ВЫКЛЮЧЕНО
 		// (по умолчанию). Установка пути включает подробную запись всех
 		// операций в этот файл (дозапись). Только для диагностики.
@@ -184,7 +216,7 @@ namespace BatchImageLoaderLibrary
 
 		private BatchImageLoader()
 		{
-			storage = new StorageFacade(StorageType);
+			storage = new StorageFacade(StorageType, cacheDirectory, databasePath);
 		}
 
 		public static BatchImageLoader Instance
@@ -198,37 +230,6 @@ namespace BatchImageLoaderLibrary
 				return instance;
 			}
 		}
-
-		/*
-		public static CachedImage GetThumbnail(string path, int width, int height)
-        {
-            try
-            {
-                string filename = GetImagePath(path) + "_" + width + "x" + height + ".jpg";
-                if (File.Exists(filename))
-                    return new CachedImage(File.ReadAllBytes(filename));
-
-                if (!Directory.Exists("cache"))
-                    Directory.CreateDirectory("cache");
-
-                using (Image img = Image.FromFile(path))
-                {
-                    using (Bitmap b = new Bitmap(img, new Size(width, height)))
-                    {
-                        using (MemoryStream ms = new MemoryStream())
-                        {
-                            b.Save(ms, System.Drawing.Imaging.ImageFormat.Jpeg);
-                            File.WriteAllBytes(GetImagePath(path) + "_" + width + "x" + height + ".jpg", ms.ToArray());
-                            return new CachedImage(ms.ToArray());
-                        }
-                    }
-                }
-            }
-            catch (Exception e)
-            {
-                return null;
-            }
-        }*/
 
 		public Task<CachedImage> GetImageFromUrl(string url)
 		{
@@ -255,7 +256,7 @@ namespace BatchImageLoaderLibrary
 			}
 		}
 
-        private async Task<CachedImage> ProcessUrlAsync(string url)
+		private async Task<CachedImage> ProcessUrlAsync(string url)
 		{
 			Interlocked.Increment(ref imagesInQueue);
 			FileLog.Write("queue+ : " + url + " (waiting=" + imagesInQueue + ", threads=" + threadsCount + ")");
@@ -273,10 +274,10 @@ namespace BatchImageLoaderLibrary
 			Stopwatch sw = Stopwatch.StartNew();
 			try
 			{
-				// Размер превью (или orig) входит в ключ кэша, поэтому и чтение,
-				// и запись должны идти под одним вариантом.
-				storage.Variant = CurrentVariant();
-				byte[]? data = LoadFromCache(url);
+				// Размер превью (или orig) входит в ключ кэша. Вариант фиксируем
+				// один раз на запрос и передаём явно — никакого общего состояния.
+				string variant = CurrentVariant();
+				byte[]? data = LoadFromCache(url, variant);
 				if (data == null)
 				{
 					data = await LoadImage(url);
@@ -294,7 +295,7 @@ namespace BatchImageLoaderLibrary
 							int before = data.Length;
 							data = CreateThumbnail(data, ThumbnailHeigth, ThumbnailWidth);
 							FileLog.Write("thumb  : " + url + " " + before + " -> " + (data?.Length ?? 0) +
-								" bytes (" + CurrentVariant() + ")");
+								" bytes (" + variant + ")");
 						}
 
 						if (data == null)
@@ -309,8 +310,8 @@ namespace BatchImageLoaderLibrary
 					// «отравит» URL — на следующих запусках вернётся 404 без ретрая.
 					if (NeedSaveToCache && !loadFailed)
 					{
-						SaveToCache(url, data);
-						FileLog.Write("cached : " + url + " (" + data.Length + " bytes, variant=" + CurrentVariant() + ")");
+						SaveToCache(url, variant, data);
+						FileLog.Write("cached : " + url + " (" + data.Length + " bytes, variant=" + variant + ")");
 					}
 				}
 
@@ -368,11 +369,11 @@ namespace BatchImageLoaderLibrary
 
 		public async Task LoadFromCache()
 		{
-			// Предзагрузка тоже должна идти под текущим вариантом, иначе
-			// GetAll вернёт картинки не того размера (или ничего).
-			storage.Variant = CurrentVariant();
-			FileLog.Write("preload: reading cache (variant=" + CurrentVariant() + ", storage=" + StorageType + ")");
-			Dictionary<string, byte[]> data = await storage.GetAll();
+			// Предзагрузка идёт под текущим вариантом: другие размеры того же
+			// URL в память не попадают.
+			string variant = CurrentVariant();
+			FileLog.Write("preload: reading cache (variant=" + variant + ", storage=" + StorageType + ")");
+			Dictionary<string, byte[]> data = storage.GetAll(variant);
 			foreach ((string key, byte[] value) in data)
 			{
 				Images.TryAdd(key, new Lazy<Task<CachedImage>>(Task.FromResult(new CachedImage(value))));
@@ -380,17 +381,17 @@ namespace BatchImageLoaderLibrary
 			FileLog.Write("preload: " + data.Count + " images loaded into memory");
 		}
 
-		private static byte[]? LoadFromCache(string url)
+		private static byte[]? LoadFromCache(string url, string variant)
 		{
-			byte[]? result = storage.Get(url);
+			byte[]? result = storage.Get(url, variant);
 			if (FileLog.Enabled)
 				FileLog.Write("cache  : " + url + " -> " + (result != null ? "HIT " + result.Length + " bytes" : "miss"));
 			return result;
 		}
 
-		private static void SaveToCache(string url, byte[] data)
+		private static void SaveToCache(string url, string variant, byte[] data)
 		{
-			storage.Add(url, data);
+			storage.Add(url, variant, data);
 		}
 
 		// Суффикс имени файла кэша: размер превью ("120x120") или "orig"

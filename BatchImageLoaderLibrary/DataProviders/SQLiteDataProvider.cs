@@ -10,13 +10,14 @@ namespace BatchImageLoaderLibrary.DataProviders
 		// потокобезопасны, а провайдер вызывают из десятков потоков сразу.
 		private readonly string connectionString;
 
-		// Вариант картинки (размер превью / "orig"), часть составного ключа.
-		public string Variant { get; set; } = "orig";
-
-		public SQLiteDataProvider(string dbName)
+		public SQLiteDataProvider(string databasePath)
 		{
-			connectionString = "Data Source=" + dbName;
-			FileLog.Write("sqlite : open " + dbName);
+			string? directory = Path.GetDirectoryName(databasePath);
+			if (!string.IsNullOrEmpty(directory))
+				Directory.CreateDirectory(directory);
+
+			connectionString = new SqliteConnectionStringBuilder { DataSource = databasePath }.ToString();
+			FileLog.Write("sqlite : open " + databasePath);
 			using SqliteConnection connection = OpenConnection();
 			EnsureSchema(connection);
 		}
@@ -69,51 +70,40 @@ namespace BatchImageLoaderLibrary.DataProviders
 			command.ExecuteNonQuery();
 		}
 
-		public byte[]? Get(string path)
+		public byte[]? Get(string path, string variant)
 		{
 			using SqliteConnection connection = OpenConnection();
 			using SqliteCommand command = connection.CreateCommand();
 			command.CommandText = "SELECT data FROM images WHERE path = @path AND variant = @variant";
 			command.Parameters.AddWithValue("@path", path);
-			command.Parameters.AddWithValue("@variant", Variant);
+			command.Parameters.AddWithValue("@variant", variant);
 
 			using SqliteDataReader reader = command.ExecuteReader();
 			return reader.Read() ? (byte[])reader["data"] : null;
 		}
 
-		public async Task<Dictionary<string, byte[]>> GetAll()
+		public Dictionary<string, byte[]> GetAll(string variant)
 		{
 			Dictionary<string, byte[]> result = new Dictionary<string, byte[]>();
 			using SqliteConnection connection = OpenConnection();
 			using SqliteCommand command = connection.CreateCommand();
 			command.CommandText = "SELECT path, data FROM images WHERE variant = @variant";
-			command.Parameters.AddWithValue("@variant", Variant);
+			command.Parameters.AddWithValue("@variant", variant);
 
-			using SqliteDataReader reader = await command.ExecuteReaderAsync();
-			while (await reader.ReadAsync())
+			using SqliteDataReader reader = command.ExecuteReader();
+			while (reader.Read())
 				result[(string)reader["path"]] = (byte[])reader["data"];
 
 			return result;
 		}
 
-		public void Add(string path, byte[] data)
+		public void Add(string path, string variant, byte[] data)
 		{
 			using SqliteConnection connection = OpenConnection();
 			using SqliteCommand command = connection.CreateCommand();
 			command.CommandText = "INSERT OR REPLACE INTO images (path, variant, data) VALUES(@path, @variant, @data)";
 			command.Parameters.AddWithValue("@path", path);
-			command.Parameters.AddWithValue("@variant", Variant);
-			command.Parameters.Add("@data", SqliteType.Blob, data.Length).Value = data;
-			command.ExecuteNonQuery();
-		}
-
-		public void Update(string path, byte[] data)
-		{
-			using SqliteConnection connection = OpenConnection();
-			using SqliteCommand command = connection.CreateCommand();
-			command.CommandText = "UPDATE images SET data = @data WHERE path = @path AND variant = @variant";
-			command.Parameters.AddWithValue("@path", path);
-			command.Parameters.AddWithValue("@variant", Variant);
+			command.Parameters.AddWithValue("@variant", variant);
 			command.Parameters.Add("@data", SqliteType.Blob, data.Length).Value = data;
 			command.ExecuteNonQuery();
 		}

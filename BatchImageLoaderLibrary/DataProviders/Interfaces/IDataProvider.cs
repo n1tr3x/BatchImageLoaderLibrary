@@ -1,19 +1,18 @@
-﻿namespace BatchImageLoaderLibrary.DataProviders.Interfaces
+namespace BatchImageLoaderLibrary.DataProviders.Interfaces
 {
+	// Персистентное хранилище кэша. Вариант картинки («120x120» или «orig»)
+	// передаётся явно в каждую операцию: у провайдера нет разделяемого
+	// изменяемого состояния, поэтому его безопасно дёргать из десятков потоков.
 	internal interface IDataProvider
 	{
-		// Вариант кэшируемой картинки (размер превью "120x120" или "orig").
-		// Входит в ключ кэша: имя файла у FILE, часть составного PK у DB.
-		public string Variant { get; set; }
+		public byte[]? Get(string key, string variant);
 
-		public byte[]? Get(string key);
+		// Все записи одного варианта: url -> данные.
+		public Dictionary<string, byte[]> GetAll(string variant);
 
-		public Task<Dictionary<string, byte[]>> GetAll();
+		public void Add(string key, string variant, byte[] data);
 
-		public void Add(string key, byte[] data);
-
-		public void Update(string key, byte[] data);
-
+		// Удаляет ВСЕ варианты ключа.
 		public void Remove(string key);
 
 		public void RemoveAll();

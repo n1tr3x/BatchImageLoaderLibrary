@@ -1,4 +1,4 @@
-﻿using BatchImageLoaderLibrary.DataProviders;
+using BatchImageLoaderLibrary.DataProviders;
 using BatchImageLoaderLibrary.DataProviders.Interfaces;
 
 namespace BatchImageLoaderLibrary
@@ -9,18 +9,20 @@ namespace BatchImageLoaderLibrary
 		DB
 	}
 
+	// Выбирает бэкенд и держит пути к нему. Пути абсолютные и фиксируются
+	// при создании провайдера; смена типа или пути пересоздаёт провайдер.
 	internal class StorageFacade : IDataProvider
 	{
 		private StorageType storageType;
-		private string dbName = "BatchImageLoaderLibraryCache.sqlite";
-		private string directoryName = @"cache";
-        //private string directoryName = @"d:\dropbox\работа\PhotoSearchCommander\cache";
+		private string cacheDirectory;
+		private string databasePath;
+		private IDataProvider dataProvider = null!;
 
-        private IDataProvider dataProvider = null!;
-
-		public StorageFacade(StorageType type)
+		public StorageFacade(StorageType type, string cacheDirectory, string databasePath)
 		{
 			storageType = type;
+			this.cacheDirectory = cacheDirectory;
+			this.databasePath = databasePath;
 			CreateStorage();
 		}
 
@@ -36,89 +38,49 @@ namespace BatchImageLoaderLibrary
 			}
 		}
 
+		public string CacheDirectory
+		{
+			get => cacheDirectory;
+			set
+			{
+				if (cacheDirectory == value)
+					return;
+				cacheDirectory = value;
+				if (storageType == StorageType.FILE)
+					CreateStorage();
+			}
+		}
+
+		public string DatabasePath
+		{
+			get => databasePath;
+			set
+			{
+				if (databasePath == value)
+					return;
+				databasePath = value;
+				if (storageType == StorageType.DB)
+					CreateStorage();
+			}
+		}
+
 		private void CreateStorage()
 		{
-			switch (storageType)
+			dataProvider = storageType switch
 			{
-				case StorageType.FILE:
-					dataProvider = new FilesystemDataProvider(directoryName);
-					break;
-				case StorageType.DB:
-					dataProvider = new SQLiteDataProvider(DbName);
-					break;
-			}
+				StorageType.FILE => new FilesystemDataProvider(cacheDirectory),
+				_ => new SQLiteDataProvider(databasePath),
+			};
 		}
 
-		public string DbName
-		{
-			get => dbName;
-			set
-			{
-				if (storageType == StorageType.DB && dbName != value)
-				{
-					dataProvider = new SQLiteDataProvider(value);
-				}
-				dbName = value;
-			}
-		}
+		public byte[]? Get(string url, string variant) => dataProvider.Get(url, variant);
 
-		public string DirectoryName
-		{
-			get => directoryName;
-			set
-			{
-				directoryName = value;
-				if (storageType == StorageType.FILE)
-				{
-					((FilesystemDataProvider)dataProvider).CacheDirectory = value;
-				}
-			}
-		}
+		public Dictionary<string, byte[]> GetAll(string variant) => dataProvider.GetAll(variant);
 
-		// Вариант кэша (размер превью / "orig"). У FILE попадает в имя файла,
-		// у DB — в составной ключ (path, variant).
-		public string Variant
-		{
-			get => dataProvider.Variant;
-			set => dataProvider.Variant = value;
-		}
+		public void Add(string url, string variant, byte[] data) => dataProvider.Add(url, variant, data);
 
-		public byte[]? Get(string url)
-		{
-			//if (storageType == StorageType.FILE)
-			//	url = NormalizeUrl(url);
-			return dataProvider.Get(url);
-		}
+		public void Remove(string url) => dataProvider.Remove(url);
 
-		public async Task<Dictionary<string, byte[]>> GetAll()
-		{
-			return await dataProvider.GetAll();
-		}
-
-		public void Add(string url, byte[] data)
-		{
-			//if (storageType == StorageType.FILE)
-			//	url = NormalizeUrl(url);
-			dataProvider.Add(url, data);
-		}
-
-		public void Update(string url, byte[] data)
-		{
-			//if (storageType == StorageType.FILE)
-			//	url = NormalizeUrl(url);
-			dataProvider.Update(url, data);
-		}
-
-		public void Remove(string url)
-		{
-			//if (storageType == StorageType.FILE)
-			//	url = NormalizeUrl(url);
-			dataProvider.Remove(url);
-		}
-
-		public void RemoveAll()
-		{
-			dataProvider.RemoveAll();
-		}
+		public void RemoveAll() => dataProvider.RemoveAll();
 	}
 }
