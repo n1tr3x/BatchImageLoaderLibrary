@@ -6,7 +6,7 @@ A concurrent batch image loader for .NET desktop apps on Windows: request de-dup
 [![NuGet](https://img.shields.io/nuget/v/BatchImageLoaderLibrary?logo=nuget&label=NuGet&color=004880)](https://www.nuget.org/packages/BatchImageLoaderLibrary)
 [![Downloads](https://img.shields.io/nuget/dt/BatchImageLoaderLibrary?logo=nuget&label=downloads&color=004880)](https://www.nuget.org/packages/BatchImageLoaderLibrary)
 [![CI](https://github.com/n1tr3x/BatchImageLoaderLibrary/actions/workflows/ci.yml/badge.svg)](https://github.com/n1tr3x/BatchImageLoaderLibrary/actions/workflows/ci.yml)
-[![.NET](https://img.shields.io/badge/.NET-8.0--windows-512BD4?logo=dotnet&logoColor=white)](#requirements)
+[![.NET](https://img.shields.io/badge/.NET-8.0--windows-512BD4?logo=dotnet&logoColor=white)](#requirements-and-limitations)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 ```csharp
