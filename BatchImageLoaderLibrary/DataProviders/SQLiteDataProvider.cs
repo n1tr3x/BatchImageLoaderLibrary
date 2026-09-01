@@ -1,4 +1,5 @@
 using BatchImageLoaderLibrary.DataProviders.Interfaces;
+using System.IO;
 using Microsoft.Data.Sqlite;
 
 namespace BatchImageLoaderLibrary.DataProviders
