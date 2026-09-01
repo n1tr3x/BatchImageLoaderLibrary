@@ -238,22 +238,39 @@ namespace BatchImageLoaderLibrary
 			// Один и тот же Task на каждый url: первый вызов запускает загрузку,
 			// остальные (текущие и будущие) ждут его же — без поллинга и без
 			// риска зависнуть; результат ИЛИ исключение получают все awaiter'ы.
-			return Images.GetOrAdd(url, u => new Lazy<Task<CachedImage>>(() => LoadAsync(u))).Value;
+			return Images.GetOrAdd(url, u =>
+			{
+				Lazy<Task<CachedImage>> entry = null!;
+				entry = new Lazy<Task<CachedImage>>(() => LoadAsync(u, entry));
+				return entry;
+			}).Value;
 		}
 
-		private async Task<CachedImage> LoadAsync(string url)
+		private async Task<CachedImage> LoadAsync(string url, Lazy<Task<CachedImage>> entry)
 		{
 			try
 			{
-				return await ProcessUrlAsync(url);
+				CachedImage result = await ProcessUrlAsync(url);
+				// Заглушку в памяти не держим: текущие ожидающие получат её из этого
+				// Task, а следующий GetImageFromUrl запустит загрузку заново.
+				if (result.IsPlaceholder)
+					Forget(url, entry);
+				return result;
 			}
 			catch (Exception ex)
 			{
 				// Не оставляем сбойную задачу в кэше — даём шанс повторить загрузку.
 				FileLog.Write("evict  : " + url + " after error " + ex.GetType().Name + ": " + ex.Message);
-				Images.TryRemove(url, out _);
+				Forget(url, entry);
 				throw;
 			}
+		}
+
+		// Убирает из словаря именно СВОЮ запись: если её уже вытеснил ClearCache
+		// и на её месте идёт новая загрузка, чужую запись не трогаем.
+		private static void Forget(string url, Lazy<Task<CachedImage>> entry)
+		{
+			Images.TryRemove(new KeyValuePair<string, Lazy<Task<CachedImage>>>(url, entry));
 		}
 
 		private async Task<CachedImage> ProcessUrlAsync(string url)
@@ -277,11 +294,11 @@ namespace BatchImageLoaderLibrary
 				// Размер превью (или orig) входит в ключ кэша. Вариант фиксируем
 				// один раз на запрос и передаём явно — никакого общего состояния.
 				string variant = CurrentVariant();
+				bool loadFailed = false;
 				byte[]? data = LoadFromCache(url, variant);
 				if (data == null)
 				{
 					data = await LoadImage(url);
-					bool loadFailed = false;
 					if (data == null || data.Length == 0)
 					{
 						loadFailed = true;
@@ -316,8 +333,9 @@ namespace BatchImageLoaderLibrary
 				}
 
 				sw.Stop();
-				FileLog.Write("done   : " + url + " (total=" + sw.ElapsedMilliseconds + "ms, " + data.Length + " bytes)");
-				return new CachedImage(data);
+				FileLog.Write("done   : " + url + " (total=" + sw.ElapsedMilliseconds + "ms, " + data.Length + " bytes" +
+					(loadFailed ? ", placeholder" : "") + ")");
+				return new CachedImage(data, loadFailed);
 			}
 			finally
 			{
@@ -412,16 +430,33 @@ namespace BatchImageLoaderLibrary
 			}
 		}
 
+		// Хранилище создаётся вместе с Instance, а статическим Clear* оно нужно
+		// и до первого обращения к Instance.
+		private static StorageFacade Storage
+		{
+			get
+			{
+				if (storage == null)
+					_ = Instance;
+				return storage;
+			}
+		}
+
+		// Забывает URL и в памяти, и на диске (все варианты): следующий
+		// GetImageFromUrl загрузит его заново.
 		public static void ClearCacheForUrl(string url)
 		{
 			FileLog.Write("clear  : " + url);
-			storage.Remove(url);
+			Images.TryRemove(url, out _);
+			Storage.Remove(url);
 		}
 
+		// Полная очистка: и in-memory словарь, и персистентный кэш.
 		public static void ClearCache()
 		{
 			FileLog.Write("clear  : ALL");
-			storage.RemoveAll();
+			Images.Clear();
+			Storage.RemoveAll();
 		}
 	}
 }

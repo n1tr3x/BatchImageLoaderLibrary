@@ -18,11 +18,23 @@ namespace BatchImageLoaderLibrary
 			Data = data;
 		}
 
+		public CachedImage(byte[] data, bool isPlaceholder)
+		{
+			Data = data;
+			IsPlaceholder = isPlaceholder;
+		}
+
 		public byte[]? Data
 		{
 			get => data;
 			set => data = value;
 		}
+
+		// true — загрузка не удалась (сеть, HTTP-ошибка, не картинка, битые байты)
+		// и внутри лежит встроенная заглушка 404. Такая картинка не пишется
+		// в персистентный кэш и не удерживается в памяти: следующий
+		// GetImageFromUrl по тому же URL попробует загрузить заново.
+		public bool IsPlaceholder { get; }
 
 		public bool Loaded()
 		{
