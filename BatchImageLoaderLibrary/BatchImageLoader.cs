@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -100,17 +101,44 @@ namespace BatchImageLoaderLibrary
 
 		// Один разделяемый HttpClient на всю библиотеку: переиспользует пул
 		// соединений и не плодит сокеты в TIME_WAIT при пакетной загрузке.
-		// PooledConnectionLifetime заставляет периодически пересоздавать
-		// соединения, чтобы подхватывать изменения DNS у вечного клиента.
-		private static readonly HttpClient httpClient = new HttpClient(
-			new SocketsHttpHandler
-			{
-				PooledConnectionLifetime = TimeSpan.FromMinutes(5),
-				ConnectCallback = ConnectViaSafeLocalPort
-			})
+		// Создаётся лениво при первой загрузке, чтобы успеть подменить транспорт.
+		private static HttpClient? httpClient;
+		private static readonly object httpLock = new();
+
+		// Подменяемый транспорт: задать ДО первой загрузки. null — стандартный
+		// SocketsHttpHandler с привязкой локального порта. Нужен тестам (фейковый
+		// handler) и нестандартным сценариям: прокси, заголовки через DelegatingHandler.
+		public static HttpMessageHandler? HttpHandler { get; set; }
+
+		// Общий таймаут на один запрос: соединение + заголовки + чтение тела.
+		public static TimeSpan RequestTimeout { get; set; } = TimeSpan.FromSeconds(30);
+
+		// Лимит размера ответа. Больше — сбой загрузки (заглушка без кэширования),
+		// чтобы случайный или вредоносный URL не съел память процесса.
+		public static long MaxImageBytes { get; set; } = 64L * 1024 * 1024;
+
+		private static HttpClient GetHttpClient()
 		{
-			Timeout = TimeSpan.FromSeconds(30)
-		};
+			HttpClient? client = httpClient;
+			if (client != null)
+				return client;
+
+			lock (httpLock)
+			{
+				// PooledConnectionLifetime заставляет периодически пересоздавать
+				// соединения, чтобы подхватывать изменения DNS у вечного клиента.
+				return httpClient ??= new HttpClient(HttpHandler ?? new SocketsHttpHandler
+				{
+					PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+					ConnectCallback = ConnectViaSafeLocalPort
+				})
+				{
+					// Таймаут держим сами (CTS на запрос в LoadImage): встроенный
+					// не покрывает чтение тела при ResponseHeadersRead.
+					Timeout = System.Threading.Timeout.InfiniteTimeSpan
+				};
+			}
+		}
 
 		// Картинка-заглушка встроена в сборку (EmbeddedResource 404.png),
 		// чтобы не таскать файл рядом с exe. Загружается один раз.
@@ -366,26 +394,75 @@ namespace BatchImageLoaderLibrary
 			}
 		}
 
+		// null = сбой загрузки: сеть, не-2xx, превышен лимит размера, тело — не
+		// картинка. Выше это превращается в заглушку 404 без записи в кэш.
 		private static async Task<byte[]?> LoadImage(string url)
 		{
 			FileLog.Write("http   : GET " + url);
 			Interlocked.Increment(ref imagesLoading);
 			Stopwatch sw = Stopwatch.StartNew();
-			byte[]? bytes = null;
 			try
 			{
-				bytes = await httpClient.GetByteArrayAsync(url).ConfigureAwait(false);
+				using CancellationTokenSource cts = new CancellationTokenSource(RequestTimeout);
+				using HttpResponseMessage response = await GetHttpClient()
+					.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cts.Token).ConfigureAwait(false);
+				response.EnsureSuccessStatusCode();
+
+				long limit = MaxImageBytes;
+				long? declared = response.Content.Headers.ContentLength;
+				if (declared > limit)
+				{
+					FileLog.Write("http-x : " + url + " too big: Content-Length " + declared + " > " + limit);
+					return null;
+				}
+
+				// Читаем потоком с контролем размера: Content-Length может отсутствовать или врать.
+				using Stream stream = await response.Content.ReadAsStreamAsync(cts.Token).ConfigureAwait(false);
+				using MemoryStream ms = new MemoryStream(declared.HasValue ? (int)declared.Value : 64 * 1024);
+				byte[] buffer = ArrayPool<byte>.Shared.Rent(81920);
+				try
+				{
+					int read;
+					while ((read = await stream.ReadAsync(buffer, cts.Token).ConfigureAwait(false)) > 0)
+					{
+						if (ms.Length + read > limit)
+						{
+							FileLog.Write("http-x : " + url + " too big: body exceeds " + limit + " bytes");
+							return null;
+						}
+						ms.Write(buffer, 0, read);
+					}
+				}
+				finally
+				{
+					ArrayPool<byte>.Shared.Return(buffer);
+				}
+
+				byte[] bytes = ms.ToArray();
+
+				// 200 OK с HTML (капча, captive-portal, страница логина после
+				// редиректа) — не картинка; в кэш такое попадать не должно.
+				if (!ImageSignature.IsImage(bytes))
+				{
+					FileLog.Write("http-x : " + url + " not an image (" + bytes.Length + " bytes, Content-Type: " +
+						(response.Content.Headers.ContentType?.MediaType ?? "-") + ")");
+					return null;
+				}
+
 				FileLog.Write("http-ok: " + url + " -> " + bytes.Length + " bytes in " + sw.ElapsedMilliseconds + "ms");
+				return bytes;
 			}
 			catch (Exception e)
 			{
 				FileLog.Write("http-x : " + url + " FAILED in " + sw.ElapsedMilliseconds + "ms: " +
 					e.GetType().Name + ": " + e.Message);
 				Trace.WriteLine("LoadImage failed for " + url + ": " + e.Message);
+				return null;
 			}
-
-			Interlocked.Decrement(ref imagesLoading);
-			return bytes;
+			finally
+			{
+				Interlocked.Decrement(ref imagesLoading);
+			}
 		}
 
 		public async Task LoadFromCache()
