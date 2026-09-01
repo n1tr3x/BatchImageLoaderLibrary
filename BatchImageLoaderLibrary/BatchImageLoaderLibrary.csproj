@@ -1,29 +1,36 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <!-- Минимальный Windows-таргет: -windows обязателен (WPF/GDI+/NTFS ADS),
-         а ниже net6 смысла нет (net5/netcoreapp3.1 — EOL без выгод).
-         net6 тоже EOL — наг про EOL глушим осознанно. -->
-    <TargetFramework>net6.0-windows</TargetFramework>
-    <CheckEolTargetFramework>false</CheckEolTargetFramework>
-    <!-- Разрешает сборку/publish Windows-таргета на Linux-раннере CI. -->
+    <!-- net8.0-windows (LTS): -windows обязателен из-за WPF (ToBitmapImage), GDI+ (System.Drawing)
+         и NTFS ADS в файловом бэкенде. net6.0 снят: он EOL, а пакеты 10.x для него отдают
+         только netstandard2.0-заглушки (System.Drawing.Common бросал PlatformNotSupportedException). -->
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <!-- Разрешает сборку/pack Windows-таргета на Linux-раннере. -->
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <!-- Нужен для WPF-вывода CachedImage.ToBitmapImage(); WinForms-потребители не затрагиваются. -->
+    <!-- Нужен для WPF-вывода CachedImage.ToBitmapImage(). Потребителям прилетает
+         FrameworkReference на Microsoft.WindowsDesktop.App.WPF. -->
     <UseWPF>true</UseWPF>
   </PropertyGroup>
 
   <PropertyGroup>
     <PackageId>BatchImageLoaderLibrary</PackageId>
-    <Version>1.0.7</Version>
+    <!-- Единственный источник версии. Релиз = git-тег vX.Y.Z с тем же номером (CI сверяет). -->
+    <Version>1.1.0</Version>
     <Authors>n1tr3x</Authors>
-    <Description>Batch image loader with on-disk and SQLite caching.</Description>
+    <Description>Concurrent batch image loader for .NET on Windows: request de-duplication, hard concurrency cap, thumbnail generation, persistent SQLite or filesystem cache, WinForms and WPF output.</Description>
+    <PackageTags>image;images;loader;downloader;batch;cache;thumbnail;sqlite;http;wpf;winforms;gallery</PackageTags>
+    <PackageProjectUrl>https://github.com/n1tr3x/BatchImageLoaderLibrary</PackageProjectUrl>
     <RepositoryUrl>https://github.com/n1tr3x/BatchImageLoaderLibrary</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageReleaseNotes>See CHANGELOG.md in the repository.</PackageReleaseNotes>
     <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
   </PropertyGroup>
 
   <ItemGroup>
@@ -36,6 +43,10 @@
     <EmbeddedResource Include="404.png" />
     <!-- README лежит в корне репозитория (на уровень выше csproj); кладём в корень пакета. -->
     <None Include="..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="BatchImageLoaderLibraryTests" />
   </ItemGroup>
 
 </Project>
