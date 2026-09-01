@@ -364,3 +364,9 @@ FodyWeavers.xsd
 
 # Claude Code local config
 .claude/
+# BatchImageLoaderLibrary: локальный кэш смоук-прогонов, пакеты локальной сборки
+cache/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+artifacts/
