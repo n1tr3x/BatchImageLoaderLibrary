@@ -238,10 +238,13 @@ namespace BatchImageLoaderLibrary
 			// Один и тот же Task на каждый url: первый вызов запускает загрузку,
 			// остальные (текущие и будущие) ждут его же — без поллинга и без
 			// риска зависнуть; результат ИЛИ исключение получают все awaiter'ы.
+			// Task.Run: весь конвейер (чтение кэша, HTTP, превью, запись) идёт на
+			// пуле потоков, а не в потоке вызывающего и не на его
+			// SynchronizationContext — UI-поток WinForms/WPF не блокируется.
 			return Images.GetOrAdd(url, u =>
 			{
 				Lazy<Task<CachedImage>> entry = null!;
-				entry = new Lazy<Task<CachedImage>>(() => LoadAsync(u, entry));
+				entry = new Lazy<Task<CachedImage>>(() => Task.Run(() => LoadAsync(u, entry)));
 				return entry;
 			}).Value;
 		}
@@ -250,7 +253,7 @@ namespace BatchImageLoaderLibrary
 		{
 			try
 			{
-				CachedImage result = await ProcessUrlAsync(url);
+				CachedImage result = await ProcessUrlAsync(url).ConfigureAwait(false);
 				// Заглушку в памяти не держим: текущие ожидающие получат её из этого
 				// Task, а следующий GetImageFromUrl запустит загрузку заново.
 				if (result.IsPlaceholder)
@@ -282,7 +285,7 @@ namespace BatchImageLoaderLibrary
 			// прежней проверки threadsCount ДО инкремента) и не крутит busy-wait.
 			SemaphoreSlim throttle = GetThrottle();
 			Stopwatch waitSw = Stopwatch.StartNew();
-			await throttle.WaitAsync();
+			await throttle.WaitAsync().ConfigureAwait(false);
 			waitSw.Stop();
 			Interlocked.Increment(ref threadsCount);
 			Interlocked.Decrement(ref imagesInQueue);
@@ -298,7 +301,7 @@ namespace BatchImageLoaderLibrary
 				byte[]? data = LoadFromCache(url, variant);
 				if (data == null)
 				{
-					data = await LoadImage(url);
+					data = await LoadImage(url).ConfigureAwait(false);
 					if (data == null || data.Length == 0)
 					{
 						loadFailed = true;
@@ -371,7 +374,7 @@ namespace BatchImageLoaderLibrary
 			byte[]? bytes = null;
 			try
 			{
-				bytes = await httpClient.GetByteArrayAsync(url);
+				bytes = await httpClient.GetByteArrayAsync(url).ConfigureAwait(false);
 				FileLog.Write("http-ok: " + url + " -> " + bytes.Length + " bytes in " + sw.ElapsedMilliseconds + "ms");
 			}
 			catch (Exception e)
@@ -391,7 +394,8 @@ namespace BatchImageLoaderLibrary
 			// URL в память не попадают.
 			string variant = CurrentVariant();
 			FileLog.Write("preload: reading cache (variant=" + variant + ", storage=" + StorageType + ")");
-			Dictionary<string, byte[]> data = storage.GetAll(variant);
+			// Чтение всего кэша — дисковая работа; уводим её с потока вызывающего.
+			Dictionary<string, byte[]> data = await Task.Run(() => storage.GetAll(variant)).ConfigureAwait(false);
 			foreach ((string key, byte[] value) in data)
 			{
 				Images.TryAdd(key, new Lazy<Task<CachedImage>>(Task.FromResult(new CachedImage(value))));
@@ -438,7 +442,7 @@ namespace BatchImageLoaderLibrary
 			{
 				if (storage == null)
 					_ = Instance;
-				return storage;
+				return storage!;
 			}
 		}
 
